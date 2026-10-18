@@ -1,0 +1,56 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 429d6911b77470c498dcb8a45606fb3d, type: 3}
+  m_Name: SplashTowerData
+  m_EditorClassIdentifier: 
+  towerName: "\u7FA4\u4F24\u5854"
+  cost: 120
+  buildTime: 2.5
+  towerPrefab: {fileID: 5933892038113442696, guid: f2f3c256366bdc143b05c449eade19b4,
+    type: 3}
+  attackType: 0
+  projectileMode: 1
+  bulletPrefab: {fileID: 6844724303507803971, guid: 7ed3a12b78c538043912e74ca7595a02,
+    type: 3}
+  targetPriority: 0
+  useAimLine: 0
+  aimLineDuration: 0.3
+  aimLineColor: {r: 1, g: 0.15, b: 0.15, a: 0.9}
+  aimLineWidth: 0.08
+  levels:
+  - range: 20
+    attackInterval: 2.5
+    damage: 60
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0, g: 0, b: 0, a: 0}
+    stunDuration: 0
+    explosionRadius: 4
+    upgradeCost: 0
+  - range: 24
+    attackInterval: 2.2
+    damage: 100
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0, g: 0, b: 0, a: 0}
+    stunDuration: 0
+    explosionRadius: 5
+    upgradeCost: 80
+  - range: 24
+    attackInterval: 1.8
+    damage: 180
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0, g: 0, b: 0, a: 0}
+    stunDuration: 0
+    explosionRadius: 6
+    upgradeCost: 160

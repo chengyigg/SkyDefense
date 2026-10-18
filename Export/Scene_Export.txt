@@ -1,0 +1,737 @@
+场景: SampleScene
+根物体数量: 22
+=========================================
+- Main Camera  [Layer: Default]
+  Pos: (1.66, 101.60, -45.50)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: Camera
+  Comp: AudioListener
+  Comp: UniversalAdditionalCameraData
+  Comp: CameraShake
+  Comp: CameraController
+- Directional Light  [Layer: Default]
+  Pos: (0.00, 3.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: Light
+  Comp: UniversalAdditionalLightData
+- Global Volume  [Layer: Default]
+  Pos: (0.00, 0.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: Volume
+- Ground  [Layer: Default]
+  Pos: (0.00, 0.00, 0.00)  Scale: (15.00, 1.00, 10.00)
+  Comp: Transform
+  Comp: MeshFilter
+  Comp: MeshRenderer
+  Comp: MeshCollider
+- BuildPreview  [Layer: Default]
+  Pos: (0.00, 0.00, 0.00)  Scale: (4.80, 0.10, 4.80)
+  Comp: Transform
+  Comp: MeshFilter
+  Comp: MeshRenderer
+- GameManager  [Layer: Default]
+  Pos: (-0.50, -59.54, 3.90)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: NetworkObject
+  Comp: GameManager
+  Comp: EnemyDebugHotkey
+- EventSystem  [Layer: Default]
+  Pos: (0.00, 0.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: EventSystem
+  Comp: StandaloneInputModule
+- BuildManager  [Layer: Default]
+  Pos: (-7.39, -14.68, -4.64)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: NetworkObject
+  Comp: BuildManager
+- Canvas  [Layer: UI]
+  Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+  Comp: RectTransform
+  Comp: Canvas
+  Comp: CanvasScaler
+  Comp: GraphicRaycaster
+  - BuildMenuRoot  [Layer: UI]
+    Pos: (1770.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    Comp: UIPanelAnimator
+    - BuildMenuPanel  [Layer: UI]
+      Pos: (1622.00, 853.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+      Comp: RectTransform
+      Comp: VerticalLayoutGroup
+      Comp: ContentSizeFitter
+      - Btn_MachineGun  [Layer: UI]
+        Pos: (1652.00, 1003.00, 0.00)  Scale: (2.64, 2.64, 2.64)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Image
+        Comp: Button
+        Comp: UIButtonSound
+        - Text (TMP)  [Layer: UI]
+          Pos: (1652.00, 1003.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+          Comp: RectTransform
+          Comp: CanvasRenderer
+          Comp: TextMeshProUGUI
+      - Btn_Slow  [Layer: UI]
+        Pos: (1652.00, 903.00, 0.00)  Scale: (2.64, 2.64, 2.64)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Image
+        Comp: Button
+        Comp: UIButtonSound
+        - Text (TMP)  [Layer: UI]
+          Pos: (1652.00, 903.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+          Comp: RectTransform
+          Comp: CanvasRenderer
+          Comp: TextMeshProUGUI
+      - Btn_Splash  [Layer: UI]
+        Pos: (1652.00, 803.00, 0.00)  Scale: (2.64, 2.64, 2.64)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Image
+        Comp: Button
+        Comp: UIButtonSound
+        - Text (TMP)  [Layer: UI]
+          Pos: (1652.00, 803.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+          Comp: RectTransform
+          Comp: CanvasRenderer
+          Comp: TextMeshProUGUI
+      - Btn_Sniper  [Layer: UI]
+        Pos: (1652.00, 703.00, 0.00)  Scale: (2.64, 2.64, 2.64)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Image
+        Comp: Button
+        Comp: UIButtonSound
+        - Text (TMP)  [Layer: UI]
+          Pos: (1652.00, 703.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+          Comp: RectTransform
+          Comp: CanvasRenderer
+          Comp: TextMeshProUGUI
+  - HUD  [Layer: UI]
+    Pos: (18.00, 1052.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    Comp: VerticalLayoutGroup
+    Comp: ContentSizeFitter
+    Comp: HUDController
+    - GoldText  [Layer: UI]
+      Pos: (118.00, 1027.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: TextMeshProUGUI
+    - HealthText  [Layer: UI]
+      Pos: (118.00, 947.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: TextMeshProUGUI
+    - WaveText  [Layer: UI]
+      Pos: (118.00, 867.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: TextMeshProUGUI
+  - WaveAnnouncerText  [Layer: UI]
+    Pos: (960.00, 930.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    Comp: CanvasRenderer
+    Comp: TextMeshProUGUI
+    Comp: CanvasGroup
+    Comp: WaveAnnouncer
+  - UpgradePanelRoot  [Layer: UI]
+    Pos: (1126.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    Comp: UIPanelAnimator
+    Comp: UpgradePanel
+    - BG  [Layer: UI]
+      Pos: (1126.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      - TitleText  [Layer: UI]
+        Pos: (1126.00, 755.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+      - StatsText  [Layer: UI]
+        Pos: (1126.00, 670.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+      - NextStatsText  [Layer: UI]
+        Pos: (1126.00, 591.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+      - CostText  [Layer: UI]
+        Pos: (1126.00, 524.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+      - UpgradeButton  [Layer: UI]
+        Pos: (1174.00, 453.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Image
+        Comp: Button
+        Comp: UIButtonSound
+        - Text (TMP)  [Layer: UI]
+          Pos: (1174.00, 453.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+          Comp: RectTransform
+          Comp: CanvasRenderer
+          Comp: TextMeshProUGUI
+      - CloseButton  [Layer: UI]
+        Pos: (1306.00, 796.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Image
+        Comp: Button
+        Comp: UIButtonSound
+        - Text (TMP)  [Layer: UI]
+          Pos: (1306.00, 796.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+          Comp: RectTransform
+          Comp: CanvasRenderer
+          Comp: TextMeshProUGUI
+      - SellButton  [Layer: UI]
+        Pos: (1000.00, 435.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Image
+        Comp: Button
+        Comp: UIButtonSound
+        - Text (TMP)  [Layer: UI]
+          Pos: (1000.00, 435.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+          Comp: RectTransform
+          Comp: CanvasRenderer
+          Comp: TextMeshProUGUI
+  - GameOverPanelRoot  [Layer: UI]
+    Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    Comp: CanvasGroup
+    Comp: GameOverPanel
+    Comp: NetworkObject
+    - BG  [Layer: UI]
+      Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      - TitleText  [Layer: UI]
+        Pos: (960.00, 816.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+      - SubtitleText  [Layer: UI]
+        Pos: (960.00, 621.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+      - RestartButton  [Layer: UI]
+        Pos: (960.00, 361.00, 0.00)  Scale: (3.45, 3.45, 3.45)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Image
+        Comp: Button
+        Comp: UIButtonSound
+        - Text (TMP)  [Layer: UI]
+          Pos: (960.00, 361.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+          Comp: RectTransform
+          Comp: CanvasRenderer
+          Comp: TextMeshProUGUI
+  - DamageTextRoot  [Layer: UI]
+    Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+- Path  [Layer: Default]
+  Pos: (0.00, 0.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: PathRenderer
+  - Waypoint_0  [Layer: Default]
+    Pos: (-50.00, 0.00, 30.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: Transform
+  - Waypoint_0 (1)  [Layer: Default]
+    Pos: (-50.00, 0.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: Transform
+  - Waypoint_0 (2)  [Layer: Default]
+    Pos: (20.00, 0.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: Transform
+  - Waypoint_0 (3)  [Layer: Default]
+    Pos: (20.00, 0.00, 20.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: Transform
+  - Waypoint_0 (4)  [Layer: Default]
+    Pos: (35.00, 0.00, 20.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: Transform
+  - Waypoint_0 (5)  [Layer: Default]
+    Pos: (35.00, 0.00, -20.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: Transform
+  - Waypoint_0 (6)  [Layer: Default]
+    Pos: (50.00, 0.00, -20.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: Transform
+  - GeneratedRoad  [Layer: Default]
+    Pos: (0.00, 0.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: Transform
+    - Start  [Layer: Road]
+      Pos: (-50.00, 0.00, 30.00)  Scale: (1.00, 1.00, 1.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+      - StartPrefab  [Layer: Road]
+        Pos: (-50.00, 0.00, 30.00)  Scale: (5.00, 0.20, 5.00)
+        Comp: Transform
+        Comp: MeshFilter
+        Comp: MeshRenderer
+      - 敌人出生点  [Layer: Default]
+        Pos: (-50.00, 0.00, 30.00)  Scale: (5.68, 5.68, 5.68)
+        Comp: Transform
+        Comp: MeshFilter
+        Comp: MeshRenderer
+    - Road_0_0  [Layer: Road]
+      Pos: (-50.00, 0.00, 30.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_0_1  [Layer: Road]
+      Pos: (-50.00, 0.00, 25.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_0_2  [Layer: Road]
+      Pos: (-50.00, 0.00, 20.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_0_3  [Layer: Road]
+      Pos: (-50.00, 0.00, 15.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_0_4  [Layer: Road]
+      Pos: (-50.00, 0.00, 10.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_0_5  [Layer: Road]
+      Pos: (-50.00, 0.00, 5.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_0  [Layer: Road]
+      Pos: (-50.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_1  [Layer: Road]
+      Pos: (-45.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_2  [Layer: Road]
+      Pos: (-40.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_3  [Layer: Road]
+      Pos: (-35.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_4  [Layer: Road]
+      Pos: (-30.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_5  [Layer: Road]
+      Pos: (-25.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_6  [Layer: Road]
+      Pos: (-20.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_7  [Layer: Road]
+      Pos: (-15.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_8  [Layer: Road]
+      Pos: (-10.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_9  [Layer: Road]
+      Pos: (-5.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_10  [Layer: Road]
+      Pos: (0.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_11  [Layer: Road]
+      Pos: (5.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_12  [Layer: Road]
+      Pos: (10.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_1_13  [Layer: Road]
+      Pos: (15.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_2_0  [Layer: Road]
+      Pos: (20.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_2_1  [Layer: Road]
+      Pos: (20.00, 0.00, 5.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_2_2  [Layer: Road]
+      Pos: (20.00, 0.00, 10.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_2_3  [Layer: Road]
+      Pos: (20.00, 0.00, 15.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_3_0  [Layer: Road]
+      Pos: (20.00, 0.00, 20.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_3_1  [Layer: Road]
+      Pos: (25.00, 0.00, 20.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_3_2  [Layer: Road]
+      Pos: (30.00, 0.00, 20.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_4_0  [Layer: Road]
+      Pos: (35.00, 0.00, 20.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_4_1  [Layer: Road]
+      Pos: (35.00, 0.00, 15.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_4_2  [Layer: Road]
+      Pos: (35.00, 0.00, 10.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_4_3  [Layer: Road]
+      Pos: (35.00, 0.00, 5.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_4_4  [Layer: Road]
+      Pos: (35.00, 0.00, 0.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_4_5  [Layer: Road]
+      Pos: (35.00, 0.00, -5.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_4_6  [Layer: Road]
+      Pos: (35.00, 0.00, -10.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_4_7  [Layer: Road]
+      Pos: (35.00, 0.00, -15.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_5_0  [Layer: Road]
+      Pos: (35.00, 0.00, -20.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_5_1  [Layer: Road]
+      Pos: (40.00, 0.00, -20.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - Road_5_2  [Layer: Road]
+      Pos: (45.00, 0.00, -20.00)  Scale: (5.00, 0.10, 5.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+    - End  [Layer: Road]
+      Pos: (50.00, 0.00, -20.00)  Scale: (1.00, 1.00, 1.00)
+      Comp: Transform
+      Comp: MeshFilter
+      Comp: MeshRenderer
+      Comp: BoxCollider
+      - EndPrefab  [Layer: Road]
+        Pos: (50.00, 0.00, -20.00)  Scale: (5.00, 0.20, 5.00)
+        Comp: Transform
+        Comp: MeshFilter
+        Comp: MeshRenderer
+      - 玩家核心  [Layer: Default]
+        Pos: (50.00, 0.00, -20.00)  Scale: (3.01, 3.01, 3.01)
+        Comp: Transform
+        Comp: MeshFilter
+        Comp: MeshRenderer
+- EnemySpawner  [Layer: Default]
+  Pos: (-48.77, -6.41, 27.24)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: EnemySpawner
+- EnemyManager  [Layer: Default]
+  Pos: (-48.77, -6.41, 27.24)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: EnemyManager
+- TowerRangeIndicator  [Layer: Default]
+  Pos: (902.96, 559.30, 3.59)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: TowerRangeIndicator
+- NetworkManager  [Layer: Default]
+  Pos: (10.86, 10.42, 17.37)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: NetworkManager
+  Comp: UnityTransport
+- MainMenuCanvas  [Layer: UI]
+  Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+  Comp: RectTransform
+  Comp: Canvas
+  Comp: CanvasScaler
+  Comp: GraphicRaycaster
+  Comp: MenuController
+  - MainPage  [Layer: UI]
+    Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    - Btn_Single  [Layer: UI]
+      Pos: (960.00, 796.00, 0.00)  Scale: (3.06, 3.06, 3.06)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (960.00, 796.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+    - Btn_Multi  [Layer: UI]
+      Pos: (960.00, 618.00, 0.00)  Scale: (3.06, 3.06, 3.06)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (960.00, 618.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+    - Btn_Quit  [Layer: UI]
+      Pos: (960.00, 428.00, 0.00)  Scale: (3.06, 3.06, 3.06)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (960.00, 428.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+  - MultiplayerPage     [Layer: UI]
+    Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    - Btn_Host   [Layer: UI]
+      Pos: (969.00, 158.00, 0.00)  Scale: (3.06, 3.06, 3.06)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (969.00, 158.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+    - Btn_MultiBack   [Layer: UI]
+      Pos: (1610.00, 159.00, 0.00)  Scale: (3.06, 3.06, 3.06)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (1610.00, 159.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+    - Btn_Join   [Layer: UI]
+      Pos: (369.00, 170.00, 0.00)  Scale: (3.06, 3.06, 3.06)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (369.00, 170.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+  - WaitingPage         [Layer: UI]
+    Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    - WaitingText   [Layer: UI]
+      Pos: (259.00, 669.00, 0.00)  Scale: (1.39, 1.39, 1.39)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: TextMeshProUGUI
+    - WaitingStatusText   [Layer: UI]
+      Pos: (259.00, 571.00, 0.00)  Scale: (1.39, 1.39, 1.39)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: TextMeshProUGUI
+    - Btn_Quit  [Layer: UI]
+      Pos: (254.00, 444.00, 0.00)  Scale: (3.04, 3.04, 3.04)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (254.00, 444.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+  - JoinPage            [Layer: UI]
+    Pos: (960.00, 540.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+    Comp: RectTransform
+    - InputField_IP  [Layer: UI]
+      Pos: (1531.00, 694.00, 0.00)  Scale: (2.52, 2.52, 2.52)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: InputField
+      - Placeholder  [Layer: UI]
+        Pos: (1531.00, 692.74, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Text
+      - Text (Legacy)  [Layer: UI]
+        Pos: (1531.00, 692.74, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: Text
+    - JoinStatusText   [Layer: UI]
+      Pos: (1478.00, 564.00, 0.00)  Scale: (1.32, 1.32, 1.32)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: TextMeshProUGUI
+    - Btn_JoinConnect   [Layer: UI]
+      Pos: (1393.00, 421.00, 0.00)  Scale: (3.06, 3.06, 3.06)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (1393.00, 421.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+    - Btn_JoinBack   [Layer: UI]
+      Pos: (1691.00, 426.00, 0.00)  Scale: (3.06, 3.06, 3.06)
+      Comp: RectTransform
+      Comp: CanvasRenderer
+      Comp: Image
+      Comp: Button
+      Comp: UIButtonSound
+      - Text (TMP)  [Layer: UI]
+        Pos: (1691.00, 426.00, 0.00)  Scale: (1.00, 1.00, 1.00)
+        Comp: RectTransform
+        Comp: CanvasRenderer
+        Comp: TextMeshProUGUI
+- LockOnManager  [Layer: Default]
+  Pos: (0.75, 1.40, 6.94)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: NetworkObject
+  Comp: LockOnManager
+- LockOnIndicator   [Layer: Default]
+  Pos: (0.75, 1.40, 6.94)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: LineRenderer
+  Comp: LockOnIndicator
+- WingmanSkillManager  [Layer: Default]
+  Pos: (2.82, -0.35, 7.62)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: NetworkObject
+  Comp: WingmanSkillManager
+- ScreenDamageEffect  [Layer: Default]
+  Pos: (1097.93, 341.15, 281.18)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: ScreenDamageEffect
+- HealthBarCanvas  [Layer: UI]
+  Pos: (960.00, 540.00, 0.00)  Scale: (0.01, 0.01, 0.01)
+  Comp: RectTransform
+  Comp: Canvas
+  Comp: CanvasScaler
+  Comp: GraphicRaycaster
+  Comp: HealthBarManager
+- 121  [Layer: Default]
+  Pos: (358.93, 535.09, 303.67)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: EnemyMaterialDiagnostic
+- DamageTextManager  [Layer: Default]
+  Pos: (914.99, 611.53, 342.44)  Scale: (1.00, 1.00, 1.00)
+  Comp: Transform
+  Comp: DamageTextManager

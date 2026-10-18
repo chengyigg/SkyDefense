@@ -1,0 +1,56 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 429d6911b77470c498dcb8a45606fb3d, type: 3}
+  m_Name: MachineGunData
+  m_EditorClassIdentifier: 
+  towerName: "\u673A\u67AA\u5854"
+  cost: 50
+  buildTime: 2
+  towerPrefab: {fileID: 2510934051764576587, guid: 1e8acbc598f916646ba4d08c3cf7316d,
+    type: 3}
+  attackType: 0
+  projectileMode: 0
+  bulletPrefab: {fileID: 2654462101452375861, guid: a859e365aba8dfd41b506ea11ec8eb39,
+    type: 3}
+  targetPriority: 0
+  useAimLine: 0
+  aimLineDuration: 0.3
+  aimLineColor: {r: 1, g: 0.15, b: 0.15, a: 0.9}
+  aimLineWidth: 0.08
+  levels:
+  - range: 12
+    attackInterval: 0.15
+    damage: 4
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0.3, g: 0.8, b: 1, a: 1}
+    stunDuration: 0
+    explosionRadius: 0
+    upgradeCost: 0
+  - range: 15
+    attackInterval: 0.1
+    damage: 5
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0.3, g: 0.8, b: 1, a: 1}
+    stunDuration: 0
+    explosionRadius: 0
+    upgradeCost: 60
+  - range: 15
+    attackInterval: 0.06
+    damage: 7
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0.3, g: 0.8, b: 1, a: 1}
+    stunDuration: 0
+    explosionRadius: 0
+    upgradeCost: 120

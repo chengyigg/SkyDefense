@@ -1,0 +1,5483 @@
+﻿文件夹：Assets/Scripts
+共 42 个脚本
+
+=======================================
+// Assets/Scripts/OwnerNetworkTransform.cs
+=======================================
+using Unity.Netcode.Components;
+using UnityEngine;
+
+[DisallowMultipleComponent]
+public class OwnerNetworkTransform : NetworkTransform
+{
+    protected override bool OnIsServerAuthoritative()
+    {
+        return false;   // false = �ͻ��ˣ�Owner��Ȩ��
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/BuildManager.cs
+=======================================
+using UnityEngine;
+using UnityEngine.EventSystems;
+using System.Collections.Generic;
+using Unity.Netcode;
+
+public class BuildManager : NetworkBehaviour
+{
+    public static BuildManager Instance;
+
+    public TowerData[] towerDatas;
+    public PlayerController player;
+    public UIPanelAnimator buildMenuAnimator;
+    public UpgradePanel upgradePanel;
+
+    private Vector3 _pendingBuildPosition;
+    private bool _isFlyingToBuild = false;
+
+    private Dictionary<Vector2Int, Tower> _towerGrid = new Dictionary<Vector2Int, Tower>();
+
+    private enum PendingAction { None, OpenBuildMenu, OpenUpgrade }
+    private PendingAction _pendingAction = PendingAction.None;
+    private Tower _pendingTower = null;
+
+    public bool IsMenuOpen => buildMenuAnimator != null && buildMenuAnimator.gameObject.activeInHierarchy;
+    public bool IsUpgradePanelOpen => upgradePanel != null && upgradePanel.gameObject.activeInHierarchy;
+
+    void Awake()
+    {
+        Instance = this;
+    }
+
+    void Update()
+    {
+        if (Input.GetMouseButtonDown(0) && !EventSystem.current.IsPointerOverGameObject())
+        {
+            bool closed = false;
+            if (IsMenuOpen) { buildMenuAnimator.Hide(); closed = true; }
+            if (IsUpgradePanelOpen) { upgradePanel.Hide(); closed = true; }
+            if (closed && player != null) player.canShowPreview = true;
+        }
+
+        if (Input.GetMouseButtonDown(1) && !_isFlyingToBuild && player != null)
+        {
+            if (player.IsMouseOnRoad) return;
+
+            Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            if (Physics.Raycast(ray, out RaycastHit hit, 500f))
+            {
+                float gridX = Mathf.RoundToInt(hit.point.x / player.cellSize) * player.cellSize;
+                float gridZ = Mathf.RoundToInt(hit.point.z / player.cellSize) * player.cellSize;
+                _pendingBuildPosition = new Vector3(gridX, 0, gridZ);
+
+                Vector2Int key = WorldToGrid(_pendingBuildPosition);
+                var existingTower = GetTowerAt(key);
+                if (existingTower != null && existingTower.IsBuilt)
+                {
+                    _pendingAction = PendingAction.OpenUpgrade;
+                    _pendingTower = existingTower;
+                }
+                else
+                {
+                    _pendingAction = PendingAction.OpenBuildMenu;
+                    _pendingTower = null;
+                }
+
+                player.MoveTo(_pendingBuildPosition);
+                if (TowerRangeIndicator.Instance != null) TowerRangeIndicator.Instance.Hide();
+                player.canShowPreview = false;
+                _isFlyingToBuild = true;
+
+                if (IsMenuOpen) buildMenuAnimator.Hide();
+                if (IsUpgradePanelOpen) upgradePanel.Hide();
+            }
+        }
+
+        if (_isFlyingToBuild && player != null)
+        {
+            float dist = Vector3.Distance(
+                new Vector3(player.transform.position.x, 0, player.transform.position.z),
+                _pendingBuildPosition);
+
+            if (dist < 6f)
+            {
+                _isFlyingToBuild = false;
+
+                if (_pendingAction == PendingAction.OpenUpgrade && _pendingTower != null)
+                    upgradePanel.Show(_pendingTower);
+                else if (_pendingAction == PendingAction.OpenBuildMenu)
+                    buildMenuAnimator.Show();
+
+                _pendingAction = PendingAction.None;
+                _pendingTower = null;
+            }
+        }
+    }
+
+    public Vector2Int WorldToGrid(Vector3 worldPos)
+    {
+        float cs = player != null ? player.cellSize : 5f;
+        return new Vector2Int(
+            Mathf.RoundToInt(worldPos.x / cs),
+            Mathf.RoundToInt(worldPos.z / cs));
+    }
+
+    public Tower GetTowerAt(Vector2Int key)
+    {
+        _towerGrid.TryGetValue(key, out var t);
+        return t;
+    }
+
+    // ���������� Tower ע��
+    public void RegisterTower(Vector2Int key, Tower t)
+    {
+        _towerGrid[key] = t;
+    }
+    public void UnregisterTower(Vector2Int key)
+    {
+        _towerGrid.Remove(key);
+    }
+    public void SelectTower(int index)
+    {
+        if (index < 0 || index >= towerDatas.Length) return;
+        if (player == null) return;
+
+        float gridX = Mathf.RoundToInt(player.transform.position.x / player.cellSize) * player.cellSize;
+        float gridZ = Mathf.RoundToInt(player.transform.position.z / player.cellSize) * player.cellSize;
+        Vector3 buildPos = new Vector3(gridX, 0, gridZ);
+
+        // ���ġ��� ServerRpc ����
+        if (NetworkManager.Singleton != null)
+            RequestBuildServerRpc(index, buildPos);
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void RequestBuildServerRpc(int index, Vector3 buildPos, ServerRpcParams p = default)
+    {
+        // ============ �����У�飨ȫ���ڿ۽��֮ǰ�� ============
+
+        // 1. index Խ��
+        if (index < 0 || index >= towerDatas.Length) return;
+
+        var data = towerDatas[index];
+        if (data == null) return;
+
+        // 2. �ҵ������������ң����� BuildManager.player�����Ƿ�����������ң�
+        var senderPlayer = FindPlayerByClientId(p.Receive.SenderClientId);
+        if (senderPlayer == null)
+        {
+            Debug.LogWarning($"[AntiCheat] �Ҳ��� Client {p.Receive.SenderClientId} �� PlayerController");
+            return;
+        }
+
+        // 3. �������У�飺buildPos ������ cellSize ��������
+        float cs = senderPlayer.cellSize;
+        float snapX = Mathf.Round(buildPos.x / cs) * cs;
+        float snapZ = Mathf.Round(buildPos.z / cs) * cs;
+        if (Mathf.Abs(buildPos.x - snapX) > 0.01f || Mathf.Abs(buildPos.z - snapZ) > 0.01f)
+        {
+            Debug.LogWarning($"[AntiCheat] Client {p.Receive.SenderClientId} ����λ�ò���������: {buildPos}");
+            return;
+        }
+
+        // 4. λ��һ����У�飺buildPos �����ڷ������ӽ��µ���Ҹ���
+        //    ���� 1.5 ������������ƶ� + �����ӳ��ݲ
+        float distToPlayer = Vector3.Distance(
+            new Vector3(senderPlayer.transform.position.x, 0, senderPlayer.transform.position.z),
+            new Vector3(buildPos.x, 0, buildPos.z));
+        if (distToPlayer > cs * 1.5f)
+        {
+            Debug.LogWarning($"[AntiCheat] Client {p.Receive.SenderClientId} ����������ҹ�Զ: {distToPlayer:F2} > {cs * 1.5f:F2}");
+            return;
+        }
+
+        // 5. ·����
+        int roadLayer = LayerMask.NameToLayer("Road");
+        Vector3 checkCenter = buildPos + Vector3.up * 1f;
+        Vector3 halfExtents = new Vector3(2.4f, 1f, 2.4f);
+        if (Physics.CheckBox(checkCenter, halfExtents, Quaternion.identity, 1 << roadLayer))
+        {
+            Debug.Log("·�ϲ��ܽ�����");
+            return;
+        }
+
+        // 6. ����ռ�ü��
+        Vector2Int key = WorldToGrid(buildPos);
+        if (_towerGrid.ContainsKey(key) && _towerGrid[key] != null)
+        {
+            Debug.Log("��������Ѿ������ˣ�");
+            return;
+        }
+
+        // 7. ��Ҽ�飨�������ʧ�ܲ����ˣ�
+        if (GameManager.Instance == null) return;
+        if (!GameManager.Instance.SpendGold(data.cost))
+        {
+            Debug.Log("��Ҳ���");
+            return;
+        }
+
+        // ============ ����У��ͨ�������� ============
+
+        GameObject obj = Instantiate(data.towerPrefab, buildPos, Quaternion.identity);
+        Tower tower = obj.GetComponent<Tower>();
+        if (tower != null)
+        {
+            tower.data = data;
+        }
+
+        NetworkObject no = obj.GetComponent<NetworkObject>();
+        if (no != null)
+        {
+            no.Spawn();
+
+            // ���ġ��� Spawn�������� NetworkVariable
+            if (tower != null)
+                tower.dataIndex.Value = index;
+        }
+    }
+
+    // ������������ clientId �ҵ���Ӧ�� PlayerController
+    // ������ PlayerObject����� PlayerController �� Player Prefab����
+    // ����������������� PlayerController �ȶ� OwnerClientId�����䳡��Ԥ��˫��ң�
+    private PlayerController FindPlayerByClientId(ulong clientId)
+    {
+        // ����·��
+        if (NetworkManager.Singleton != null &&
+            NetworkManager.Singleton.ConnectedClients.TryGetValue(clientId, out var client) &&
+            client.PlayerObject != null)
+        {
+            var pc = client.PlayerObject.GetComponent<PlayerController>();
+            if (pc != null) return pc;
+        }
+
+        // ����·��������Ԥ�õ� PlayerController
+        // ע�⣺����Ƶ�ʵͣ���ҵ���Ŵ��������˴�ȫ�����ɽ���
+        var all = FindObjectsOfType<PlayerController>();
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (all[i].OwnerClientId == clientId) return all[i];
+        }
+        return null;
+    }
+
+    public void OnTowerBuilt()
+    {
+        // ����շ��������� Tower.FinishBuild ����
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/CameraShake.cs
+=======================================
+using UnityEngine;
+
+public class CameraShake : MonoBehaviour
+{
+    public static CameraShake Instance;
+
+    [Header("Ĭ�ϲ���")]
+    public float defaultIntensity = 0.3f;
+    public float defaultDuration = 0.15f;
+
+    [Header("˥������")]
+    public AnimationCurve falloff = new AnimationCurve(
+        new Keyframe(0, 1),
+        new Keyframe(1, 0)
+    );
+
+    private Vector3 _basePosition;    // ���ԭʼλ��
+    private float _shakeTimer = 0f;
+    private float _currentIntensity = 0f;
+    private float _currentDuration = 0f;
+    private bool _isShaking = false;  // ���Ż�������������ʱֱ������ LateUpdate
+
+    void Awake()
+    {
+        Instance = this;
+        _basePosition = transform.localPosition;
+    }
+
+    // �ⲿ���ã���
+    public void Shake(float intensity, float duration)
+    {
+        // ȡ��ǿ���Ǹ����������𶯸���ǿ�𶯣�
+        if (intensity > _currentIntensity || _shakeTimer <= 0f)
+        {
+            _currentIntensity = intensity;
+            _currentDuration = duration;
+            _shakeTimer = duration;
+            _isShaking = true;   // ���Ż�����ǽ�����״̬
+        }
+    }
+
+    public void Shake() => Shake(defaultIntensity, defaultDuration);
+
+    void LateUpdate()
+    {
+        // ���Ż���ƽʱ�����ֱ�� return������ÿ֡�� localPosition д�� _basePosition
+        if (!_isShaking) return;
+
+        _shakeTimer -= Time.deltaTime;
+
+        if (_shakeTimer <= 0f)
+        {
+            transform.localPosition = _basePosition;
+            _currentIntensity = 0f;
+            _isShaking = false;   // ���Ż����˳���״̬
+            return;
+        }
+
+        float t = 1f - (_shakeTimer / _currentDuration);   // 0 �� 1
+        float falloffValue = falloff.Evaluate(t);
+        float amp = _currentIntensity * falloffValue;
+
+        // �������ƫ��
+        Vector3 offset = Random.insideUnitSphere * amp;
+        transform.localPosition = _basePosition + offset;
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/EnemyManager.cs
+=======================================
+using UnityEngine;
+using System.Collections.Generic;
+
+public class EnemyManager : MonoBehaviour
+{
+    public static EnemyManager Instance;
+
+    private List<Enemy> _enemies = new List<Enemy>();
+
+    // ================= ��C-2 �ռ��ϣ���� =================
+    // �����С��10����Ϊ�������ͨ���������Χ��������������Χ9�����ӣ�
+    private const float CellSize = 10f;
+    private const int GridThreshold = 20;      // ���� 20 �����˲���������
+    private const float RebuildInterval = 0.15f; // �����ؽ�������ֹÿ֡�ؽ�
+
+    private Dictionary<Vector2Int, List<Enemy>> _grid = new Dictionary<Vector2Int, List<Enemy>>();
+    private float _lastRebuildTime = -1f;
+    // =======================================================
+
+    void Awake()
+    {
+        Instance = this;
+    }
+
+    public void Register(Enemy e)
+    {
+        if (!_enemies.Contains(e)) _enemies.Add(e);
+    }
+
+    public void Unregister(Enemy e)
+    {
+        _enemies.Remove(e);
+    }
+
+    // ���ⲿ����ʹ��
+    public List<Enemy> GetAllEnemies() => _enemies;
+
+    public int AliveCount => _enemies.Count;
+
+    // �ؽ�����ֻ�е�����������ֵʱ�Ż���ã�
+    private void RebuildGridIfNecessary()
+    {
+        if (_enemies.Count <= GridThreshold) return;
+
+        // ��֡�ؽ���0.15����ֻ�ؽ�һ�Σ�������Ϳ���
+        if (Time.time - _lastRebuildTime < RebuildInterval) return;
+        _lastRebuildTime = Time.time;
+
+        // ��վ�����
+        foreach (var list in _grid.Values)
+            list.Clear();
+
+        // ��������λ������װ������
+        foreach (var e in _enemies)
+        {
+            if (e == null) continue;
+
+            Vector2Int key = new Vector2Int(
+                Mathf.FloorToInt(e.transform.position.x / CellSize),
+                Mathf.FloorToInt(e.transform.position.z / CellSize)
+            );
+
+            if (!_grid.TryGetValue(key, out var list))
+            {
+                list = new List<Enemy>();
+                _grid[key] = list;
+            }
+            list.Add(e);
+        }
+    }
+
+    public Enemy FindFarthestInRange(Vector3 pos, float range)
+    {
+        Enemy farthest = null;
+        float bestSqr = 0f;
+
+        // ���Ż�����������٣�ֱ�ӱ���������������
+        if (_enemies.Count <= GridThreshold)
+        {
+            for (int i = 0; i < _enemies.Count; i++)
+            {
+                var e = _enemies[i];
+                if (e == null) continue;
+                float sqr = (e.transform.position - pos).sqrMagnitude;
+                if (sqr <= range * range && sqr > bestSqr)
+                {
+                    bestSqr = sqr;
+                    farthest = e;
+                }
+            }
+            return farthest;
+        }
+
+        // ���Ż���������˶࣬�߿ռ������ѯ
+        RebuildGridIfNecessary();
+
+        // ������Ҫ��ѯ������Χ
+        int minX = Mathf.FloorToInt((pos.x - range) / CellSize);
+        int maxX = Mathf.FloorToInt((pos.x + range) / CellSize);
+        int minZ = Mathf.FloorToInt((pos.z - range) / CellSize);
+        int maxZ = Mathf.FloorToInt((pos.z + range) / CellSize);
+
+        for (int x = minX; x <= maxX; x++)
+        {
+            for (int z = minZ; z <= maxZ; z++)
+            {
+                if (_grid.TryGetValue(new Vector2Int(x, z), out var list))
+                {
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        var e = list[i];
+                        if (e == null) continue;
+                        float sqr = (e.transform.position - pos).sqrMagnitude;
+                        if (sqr <= range * range && sqr > bestSqr)
+                        {
+                            bestSqr = sqr;
+                            farthest = e;
+                        }
+                    }
+                }
+            }
+        }
+        return farthest;
+    }
+
+    public Enemy FindNearestInRange(Vector3 pos, float range)
+    {
+        Enemy nearest = null;
+        float bestSqr = range * range;
+
+        // ���Ż�����������٣�ֱ�ӱ���
+        if (_enemies.Count <= GridThreshold)
+        {
+            for (int i = 0; i < _enemies.Count; i++)
+            {
+                var e = _enemies[i];
+                if (e == null) continue;
+                float sqr = (e.transform.position - pos).sqrMagnitude;
+                if (sqr <= bestSqr)
+                {
+                    bestSqr = sqr;
+                    nearest = e;
+                }
+            }
+            return nearest;
+        }
+
+        // ���Ż���������˶࣬�߿ռ������ѯ
+        RebuildGridIfNecessary();
+
+        int minX = Mathf.FloorToInt((pos.x - range) / CellSize);
+        int maxX = Mathf.FloorToInt((pos.x + range) / CellSize);
+        int minZ = Mathf.FloorToInt((pos.z - range) / CellSize);
+        int maxZ = Mathf.FloorToInt((pos.z + range) / CellSize);
+
+        for (int x = minX; x <= maxX; x++)
+        {
+            for (int z = minZ; z <= maxZ; z++)
+            {
+                if (_grid.TryGetValue(new Vector2Int(x, z), out var list))
+                {
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        var e = list[i];
+                        if (e == null) continue;
+                        float sqr = (e.transform.position - pos).sqrMagnitude;
+                        if (sqr <= bestSqr)
+                        {
+                            bestSqr = sqr;
+                            nearest = e;
+                        }
+                    }
+                }
+            }
+        }
+        return nearest;
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/GameManager.cs
+=======================================
+using UnityEngine;
+using Unity.Netcode;
+using System;
+
+public class GameManager : NetworkBehaviour
+{
+    public static GameManager Instance;
+
+    [Header("���")]
+    public int startGold = 500;
+    public NetworkVariable<int> currentGold = new NetworkVariable<int>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    public int CurrentGold => currentGold.Value;
+
+    [Header("���Ѫ��")]
+    public int startHealth = 20;
+    public NetworkVariable<int> currentHealth = new NetworkVariable<int>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    public int CurrentHealth => currentHealth.Value;
+
+    [Header("����")]
+    public NetworkVariable<int> currentWaveNV = new NetworkVariable<int>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    public NetworkVariable<int> totalWavesNV = new NetworkVariable<int>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    [Header("��Ϸ״̬")]
+    public NetworkVariable<bool> gameStarted = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    public NetworkVariable<bool> isGameOverNV = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    public NetworkVariable<bool> isVictoryNV = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    public event Action<bool> OnGameEnded;
+    public event Action<int, int> OnWaveChanged;
+    public event Action OnGameStartedChanged;
+
+    public bool IsGameOver => isGameOverNV.Value;
+
+    void Awake()
+    {
+        Instance = this;
+    }
+
+    public override void OnNetworkSpawn()
+    {
+        isGameOverNV.OnValueChanged += HandleGameOverChanged;
+        isVictoryNV.OnValueChanged += HandleVictoryChanged;
+        currentWaveNV.OnValueChanged += HandleWaveChanged;
+        gameStarted.OnValueChanged += HandleGameStartedChanged;
+
+        if (IsServer)
+        {
+            currentGold.Value = startGold;
+            currentHealth.Value = startHealth;
+
+            var spawner = FindObjectOfType<EnemySpawner>();
+            if (spawner != null && spawner.waves != null)
+                totalWavesNV.Value = spawner.waves.Length;
+        }
+
+        if (gameStarted.Value) OnGameStartedChanged?.Invoke();
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        isGameOverNV.OnValueChanged -= HandleGameOverChanged;
+        isVictoryNV.OnValueChanged -= HandleVictoryChanged;
+        currentWaveNV.OnValueChanged -= HandleWaveChanged;
+        gameStarted.OnValueChanged -= HandleGameStartedChanged;
+    }
+
+    private void HandleGameOverChanged(bool oldV, bool newV)
+    {
+        if (newV) OnGameEnded?.Invoke(false);
+    }
+
+    private void HandleVictoryChanged(bool oldV, bool newV)
+    {
+        if (newV) OnGameEnded?.Invoke(true);
+    }
+
+    private void HandleWaveChanged(int oldV, int newV)
+    {
+        OnWaveChanged?.Invoke(currentWaveNV.Value, totalWavesNV.Value);
+    }
+
+    private void HandleGameStartedChanged(bool oldV, bool newV)
+    {
+        if (newV) OnGameStartedChanged?.Invoke();
+    }
+
+    // ���������� MenuController ����
+    public void StartGame()
+    {
+        if (!IsServer) return;
+
+        gameStarted.Value = true;
+
+        var spawner = FindObjectOfType<EnemySpawner>();
+        if (spawner != null) spawner.StartWaves();
+    }
+
+    public void SetWaveInfo(int current, int total)
+    {
+        if (!IsServer) return;
+        totalWavesNV.Value = total;
+        currentWaveNV.Value = current;
+    }
+
+    public void PlaySoundAll(string soundName)
+    {
+        if (!IsServer) return;
+        // ���Ż���ɾ����� Play��ֻ�� ClientRpc��
+        // ԭ��Host ģʽ������ͬʱ�ǿͻ��ˣ�ClientRpc �ᷢ�� Host �Լ���
+        //       ����ԭ��"���� + RPC"���� Host ��������ͬһ��Ч��
+        PlaySoundAllClientRpc(soundName);
+    }
+
+    [ClientRpc]
+    private void PlaySoundAllClientRpc(string soundName)
+    {
+        SoundManager.Instance?.Play(soundName);
+    }
+
+    public bool SpendGold(int amount)
+    {
+        if (IsGameOver) return false;
+        if (!IsServer) return false;
+        if (currentGold.Value >= amount)
+        {
+            currentGold.Value -= amount;
+            Debug.Log("��Ǯ�ɹ���ʣ�ࣺ" + currentGold.Value);
+            return true;
+        }
+        SoundManager.Instance?.Play("���ѽ��");
+        return false;
+    }
+
+    public void AddGold(int amount)
+    {
+        if (IsGameOver) return;
+        if (!IsServer) return;
+        currentGold.Value += amount;
+        SoundManager.Instance?.Play("��ý��");
+    }
+
+    public void TakeDamage(int amount)
+    {
+        if (IsGameOver) return;
+        if (!IsServer) return;
+        currentHealth.Value -= amount;
+        if (currentHealth.Value <= 0)
+        {
+            currentHealth.Value = 0;
+            GameOver();
+        }
+        if (CameraShake.Instance != null)
+            CameraShake.Instance.Shake(0.5f, 0.3f);
+    }
+
+    private void GameOver()
+    {
+        if (IsServer) isGameOverNV.Value = true;
+    }
+
+    public void Victory()
+    {
+        if (IsServer) isVictoryNV.Value = true;
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/LockOnManager.cs
+=======================================
+using UnityEngine;
+using Unity.Netcode;
+
+public class LockOnManager : NetworkBehaviour
+{
+    public static LockOnManager Instance;
+
+    [Header("��������")]
+    public float lockDuration = 5f;   // ������������
+
+    public NetworkVariable<ulong> lockedTargetId = new NetworkVariable<ulong>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    public NetworkVariable<float> lockStartTime = new NetworkVariable<float>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    private Enemy _cachedEnemy;
+
+    public Enemy LockedEnemy
+    {
+        get
+        {
+            if (_cachedEnemy == null) return null;
+            if (_cachedEnemy.IsDead) return null;
+            if (Time.time - lockStartTime.Value > lockDuration) return null;
+            return _cachedEnemy;
+        }
+    }
+
+    void Awake()
+    {
+        Instance = this;
+    }
+
+    public override void OnNetworkSpawn()
+    {
+        lockedTargetId.OnValueChanged += OnLockIdChanged;
+        RefreshCache();
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        lockedTargetId.OnValueChanged -= OnLockIdChanged;
+    }
+
+    private void OnLockIdChanged(ulong oldV, ulong newV)
+    {
+        RefreshCache();
+    }
+
+    void RefreshCache()
+    {
+        _cachedEnemy = null;
+        if (lockedTargetId.Value == 0) return;
+        if (NetworkManager.Singleton == null) return;
+        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(
+            lockedTargetId.Value, out var netObj))
+        {
+            _cachedEnemy = netObj.GetComponent<Enemy>();
+        }
+    }
+
+    void Update()
+    {
+        if (!IsServer) return;
+
+        // �������Զ������Ŀ����/��ʱ
+        if (lockedTargetId.Value != 0)
+        {
+            bool shouldClear = false;
+            if (_cachedEnemy == null || _cachedEnemy.IsDead) shouldClear = true;
+            if (Time.time - lockStartTime.Value > lockDuration) shouldClear = true;
+
+            if (shouldClear)
+            {
+                lockedTargetId.Value = 0;
+                _cachedEnemy = null;
+            }
+        }
+    }
+
+    public void RequestLock(Enemy target)
+    {
+        if (target == null) return;
+        ulong id = target.NetworkObjectId;
+
+        if (IsServer) DoLock(id);
+        else RequestLockServerRpc(id);
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void RequestLockServerRpc(ulong id)
+    {
+        DoLock(id);
+    }
+
+    private void DoLock(ulong id)
+    {
+        if (!IsServer) return;
+        lockedTargetId.Value = id;
+        lockStartTime.Value = Time.time;
+        SoundManager.Instance?.Play("��������");
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/SimplePool.cs
+=======================================
+using UnityEngine;
+using System.Collections.Generic;
+
+public static class SimplePool<T> where T : Component
+{
+    private static readonly Dictionary<T, Queue<T>> _pools = new Dictionary<T, Queue<T>>();
+    private static Transform _poolRoot;
+
+    public static T Spawn(T prefab, Vector3 position, Quaternion rotation)
+    {
+        if (prefab == null) return null;
+
+        if (_poolRoot == null)
+        {
+            GameObject rootObj = GameObject.Find("[PoolRoot]");
+            if (rootObj == null)
+            {
+                rootObj = new GameObject("[PoolRoot]");
+                Object.DontDestroyOnLoad(rootObj);
+            }
+            _poolRoot = rootObj.transform;
+        }
+
+        if (!_pools.TryGetValue(prefab, out var queue))
+        {
+            queue = new Queue<T>();
+            _pools[prefab] = queue;
+        }
+
+        T obj;
+        if (queue.Count > 0)
+        {
+            obj = queue.Dequeue();
+            obj.transform.SetPositionAndRotation(position, rotation);
+            obj.gameObject.SetActive(true);
+        }
+        else
+        {
+            obj = Object.Instantiate(prefab, position, rotation, _poolRoot);
+            obj.gameObject.SetActive(true);
+        }
+
+        return obj;
+    }
+
+    public static void Despawn(T obj)
+    {
+        if (obj == null) return;
+
+        obj.gameObject.SetActive(false);
+
+        // �ҵ���Ӧ�� prefab ���ӣ������ͬһ���࣬����ֱ�Ӱ����ʹ�Ҳ���ԣ�Ϊ���Ͻ������ʵ����
+        // ������Ϊ�˼򵥣�ֻҪ Object ������ͬ�͵�ͬһ������
+        // ʵ������ Prefab ��Ϊ Key ���ã��� MonoBehaviour û��ֱ���õ� Prefab ���á�
+        // ������������ֱ���õ�һ���ǿ�ʵ������Key�����߼򵥴����
+        // �������д���ӵ�ӳ�䣬��򵥵İ취�ǰ��������ֱ������һ�����͵Ķ����
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/SoundManager.cs
+=======================================
+using UnityEngine;
+using System.Collections.Generic;
+
+public class SoundManager : MonoBehaviour
+{
+    public static SoundManager Instance;
+
+    [Header("����")]
+    [Range(0f, 1f)] public float sfxVolume = 1f;
+    [Range(0f, 1f)] public float bgmVolume = 0.5f;
+
+    [Header("SFX ͬʱ��������")]
+    public int maxConcurrentSfx = 32;   // ���޸ġ��� 10 ���� 32
+
+    private Dictionary<string, AudioClip> _clips = new Dictionary<string, AudioClip>();
+    private Dictionary<string, float> _lastPlayTime = new Dictionary<string, float>(); // �����������ڽ���
+    private List<AudioSource> _sfxPool = new List<AudioSource>();
+    private AudioSource _bgmSource;
+    private float _lowHealthTimer = 0f;
+    private bool _lowHealthPlaying = false;
+
+    void Awake()
+    {
+        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+        Instance = this;
+        DontDestroyOnLoad(gameObject);
+
+        LoadAllClips();
+        CreateSfxPool();
+        CreateBgmSource();
+
+        PlayBgm();
+    }
+
+    void LoadAllClips()
+    {
+        AudioClip[] all = Resources.LoadAll<AudioClip>("Audio");
+        foreach (var c in all)
+        {
+            if (!_clips.ContainsKey(c.name))
+                _clips[c.name] = c;
+        }
+        Debug.Log($"[SoundManager] ������ {_clips.Count} ����Ƶ");
+    }
+
+    void CreateSfxPool()
+    {
+        for (int i = 0; i < maxConcurrentSfx; i++)
+        {
+            GameObject g = new GameObject($"SfxSource_{i}");
+            g.transform.SetParent(transform);
+            var src = g.AddComponent<AudioSource>();
+            src.playOnAwake = false;
+            src.volume = sfxVolume;
+            _sfxPool.Add(src);
+        }
+    }
+
+    void CreateBgmSource()
+    {
+        GameObject g = new GameObject("BgmSource");
+        g.transform.SetParent(transform);
+        _bgmSource = g.AddComponent<AudioSource>();
+        _bgmSource.loop = true;
+        _bgmSource.volume = bgmVolume;
+        _bgmSource.playOnAwake = false;
+    }
+
+    public void Play(string clipName, float volumeScale = 1f)
+    {
+        if (!_clips.TryGetValue(clipName, out var clip)) return;
+
+        // ��������0.05 ���ڵ�ͬ����Чֻ��һ�Σ���ֹ��ǹ��˲��ˢ��������Ч�ر�ռ��
+        if (_lastPlayTime.TryGetValue(clipName, out float lastTime))
+        {
+            if (Time.time - lastTime < 0.05f) return;
+        }
+        _lastPlayTime[clipName] = Time.time;
+
+        AudioSource free = null;
+        foreach (var s in _sfxPool)
+            if (!s.isPlaying) { free = s; break; }
+
+        if (free == null) free = _sfxPool[0];
+
+        free.volume = sfxVolume * volumeScale;
+        free.PlayOneShot(clip);
+    }
+
+    public void PlayBgm(string name = "bgm")
+    {
+        if (_clips.TryGetValue(name, out var clip))
+        {
+            _bgmSource.clip = clip;
+            _bgmSource.Play();
+        }
+    }
+
+    public void StopBgm() { _bgmSource.Stop(); }
+
+    public void SetLowHealthActive(bool active)
+    {
+        _lowHealthPlaying = active;
+    }
+
+    void Update()
+    {
+        // ���Ż���ɾ��ԭ��ÿ֡��� BGM �Ƿ�ֹͣ���ز����߼�
+        // ԭ��_bgmSource.loop = true �ѱ�֤��ѭ��������ÿ֡���ף�
+        //      ������ֹͣ�쳣��Ӧ�� PlayBgm() ��ʽ���ƣ���Ӧ�� Update ���������ز���
+        // ���� Update ֻ�ڵ�Ѫ��ʱ�����£��ǵ�Ѫ��״̬�¼����㿪����
+
+        if (!_lowHealthPlaying) return;
+
+        _lowHealthTimer -= Time.deltaTime;
+        if (_lowHealthTimer <= 0f)
+        {
+            Play("��Ѫ������");
+            _lowHealthTimer = 1.5f;
+        }
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/SoundManagerBootstrapper.cs
+=======================================
+using UnityEngine;
+
+public static class SoundManagerBootstrapper
+{
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    static void Bootstrap()
+    {
+        if (SoundManager.Instance != null) return;
+
+        GameObject g = new GameObject("[SoundManager]");
+        g.AddComponent<SoundManager>();
+    }
+}
+
+=======================================
+// Assets/Scripts/Core/WingmanSkillManager.cs
+=======================================
+using UnityEngine;
+using Unity.Netcode;
+
+public class WingmanSkillManager : NetworkBehaviour
+{
+    public static WingmanSkillManager Instance;
+
+    [Header("����")]
+    public GameObject wingmanPrefab;
+    public GameObject bulletPrefab;
+
+    public int cost = 30;
+    public float cooldown = 15f;
+    public int wingmanCount = 3;
+    public float lifeTime = 10f;
+    public float attackInterval = 0.3f;
+    public int damage = 3;
+    public float orbitRadius = 4f;
+    public float orbitSpeed = 180f;
+
+    [Header("��ȴ���ͻ��˶���")]
+    public NetworkVariable<float> cooldownEndTime = new NetworkVariable<float>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    void Awake()
+    {
+        Instance = this;
+    }
+
+    void Update()
+    {
+        // ֻ�ñ�����Ұ� Q ����
+        if (!IsOwner) return;
+        if (Input.GetKeyDown(KeyCode.Q))
+            RequestSummonServerRpc();
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void RequestSummonServerRpc(ServerRpcParams p = default)
+    {
+        DoSummon();
+    }
+
+    private void DoSummon()
+    {
+        if (!IsServer) return;
+
+        // ��ȴ
+        if (Time.time < cooldownEndTime.Value)
+        {
+            Debug.Log("������ȴ��");
+            return;
+        }
+
+        // ��Ϸ����
+        if (GameManager.Instance == null || GameManager.Instance.IsGameOver) return;
+
+        // ��Ŀ�꣺��������
+        Enemy target = null;
+        if (LockOnManager.Instance != null)
+            target = LockOnManager.Instance.LockedEnemy;
+
+        if (target == null && EnemyManager.Instance != null)
+            target = EnemyManager.Instance.FindNearestInRange(transform.position, 9999f);
+
+        if (target == null)
+        {
+            Debug.Log("û�пɹ�����Ŀ��");
+            return;
+        }
+
+        // ��Ǯ
+        if (!GameManager.Instance.SpendGold(cost))
+        {
+            Debug.Log("��Ҳ���");
+            return;
+        }
+
+        // ��¼��ȴ
+        cooldownEndTime.Value = Time.time + cooldown;
+
+        // ���� N ���Ż�
+        for (int i = 0; i < wingmanCount; i++)
+        {
+            float angle = i * (360f / wingmanCount);
+            float rad = angle * Mathf.Deg2Rad;
+            Vector3 spawnPos = target.transform.position + new Vector3(
+                Mathf.Cos(rad), 0, Mathf.Sin(rad)) * orbitRadius;
+            spawnPos.y = target.transform.position.y + 2f;
+
+            GameObject obj = Instantiate(wingmanPrefab, spawnPos, Quaternion.identity);
+            Wingman w = obj.GetComponent<Wingman>();
+            if (w != null)
+            {
+                w.targetNetworkId = target.NetworkObjectId;
+                w.orbitIndex = i;
+                w.totalCount = wingmanCount;
+                w.bulletPrefab = bulletPrefab;
+                w.attackInterval = attackInterval;
+                w.damage = damage;
+                w.orbitRadius = orbitRadius;
+                w.orbitSpeed = orbitSpeed;
+                w.lifeTime = lifeTime;
+            }
+
+            NetworkObject no = obj.GetComponent<NetworkObject>();
+            if (no != null) no.Spawn();
+        }
+        SoundManager.Instance?.Play("�ٻ��Ż�");
+        Debug.Log($"�ٻ��Ż�������Ŀ�� {target.name}");
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/AssetExporter.cs
+=======================================
+using UnityEngine;
+using UnityEditor;
+using System.IO;
+using System.Text;
+using System.Collections.Generic;
+
+public class AssetExporter : EditorWindow
+{
+    private string folderPath = "Assets";
+    private List<string> results = new List<string>();
+    private Vector2 scrollPos;
+
+    // �����б���ɱ༭��
+    private List<string> excludeFolders = new List<string>()
+    {
+        "Assets/TextMesh Pro",
+        "Assets/TutorialInfo",
+        "Assets/Settings",
+    };
+    private string newExcludeInput = "";
+
+    [MenuItem("Tools/��Դ�б�鿴��")]
+    public static void Open()
+    {
+        GetWindow<AssetExporter>("��Դ�б�鿴��");
+    }
+
+    void OnGUI()
+    {
+        EditorGUILayout.HelpBox("ɨ������ Assets��������ָ���ļ���", MessageType.Info);
+
+        // ��ק��
+        var dropRect = GUILayoutUtility.GetRect(0, 40, GUILayout.ExpandWidth(true));
+        GUI.Box(dropRect, string.IsNullOrEmpty(folderPath) ? "���ļ��е�����" : folderPath);
+        var evt = Event.current;
+        if (dropRect.Contains(evt.mousePosition))
+        {
+            if (evt.type == EventType.DragUpdated)
+            {
+                DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+                evt.Use();
+            }
+            else if (evt.type == EventType.DragPerform)
+            {
+                DragAndDrop.AcceptDrag();
+                foreach (var obj in DragAndDrop.objectReferences)
+                {
+                    string p = AssetDatabase.GetAssetPath(obj);
+                    if (Directory.Exists(p)) { folderPath = p; results.Clear(); }
+                }
+                evt.Use();
+            }
+        }
+
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("���ѡ��"))
+        {
+            string p = EditorUtility.OpenFolderPanel("ѡ���ļ���", Application.dataPath, "");
+            if (!string.IsNullOrEmpty(p))
+            {
+                if (p.StartsWith(Application.dataPath))
+                    folderPath = "Assets" + p.Substring(Application.dataPath.Length);
+                else folderPath = p;
+                results.Clear();
+            }
+        }
+        if (GUILayout.Button("����Ϊ Assets")) { folderPath = "Assets"; results.Clear(); }
+        EditorGUILayout.EndHorizontal();
+
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("���ε��ļ��У�������·����", EditorStyles.boldLabel);
+
+        // �����б����
+        int removeIndex = -1;
+        for (int i = 0; i < excludeFolders.Count; i++)
+        {
+            EditorGUILayout.BeginHorizontal();
+            excludeFolders[i] = EditorGUILayout.TextField(excludeFolders[i]);
+            if (GUILayout.Button("X", GUILayout.Width(24))) removeIndex = i;
+            EditorGUILayout.EndHorizontal();
+        }
+        if (removeIndex >= 0) excludeFolders.RemoveAt(removeIndex);
+
+        EditorGUILayout.BeginHorizontal();
+        newExcludeInput = EditorGUILayout.TextField("��������·��", newExcludeInput);
+        if (GUILayout.Button("+", GUILayout.Width(24)) && !string.IsNullOrEmpty(newExcludeInput))
+        {
+            excludeFolders.Add(newExcludeInput);
+            newExcludeInput = "";
+        }
+        EditorGUILayout.EndHorizontal();
+
+        EditorGUILayout.Space();
+
+        if (GUILayout.Button("ɨ��", GUILayout.Height(30))) Scan();
+
+        EditorGUILayout.LabelField($"�� {results.Count} ���ļ�");
+
+        scrollPos = EditorGUILayout.BeginScrollView(scrollPos, GUILayout.ExpandHeight(true));
+        var sb = new StringBuilder();
+        foreach (var r in results) sb.AppendLine(r);
+        EditorGUILayout.TextArea(sb.ToString(), GUILayout.ExpandHeight(true));
+        EditorGUILayout.EndScrollView();
+
+        if (GUILayout.Button("ȫ�����Ƶ�������"))
+        {
+            EditorGUIUtility.systemCopyBuffer = string.Join("\n", results);
+            Debug.Log("�Ѹ��� " + results.Count + " ��");
+        }
+    }
+
+    private void Scan()
+    {
+        results.Clear();
+
+        if (string.IsNullOrEmpty(folderPath) || !Directory.Exists(folderPath))
+        {
+            results.Add("�ļ��в����ڣ�" + folderPath);
+            return;
+        }
+
+        string[] files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories);
+        foreach (var f in files)
+        {
+            string ext = Path.GetExtension(f).ToLower();
+            if (ext == ".meta") continue;
+
+            string rel = f.Replace("\\", "/");
+            if (rel.StartsWith(Application.dataPath))
+                rel = "Assets" + rel.Substring(Application.dataPath.Length);
+
+            // ��������б�
+            bool skip = false;
+            foreach (var ex in excludeFolders)
+            {
+                if (string.IsNullOrEmpty(ex)) continue;
+                string exNorm = ex.Replace("\\", "/").TrimEnd('/');
+                if (rel == exNorm || rel.StartsWith(exNorm + "/"))
+                {
+                    skip = true;
+                    break;
+                }
+            }
+            if (skip) continue;
+
+            results.Add(rel);
+        }
+        results.Sort();
+        Debug.Log($"ɨ����ɣ��� {results.Count} ���ļ�");
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/AutoUISoundAttacher.cs
+=======================================
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEditor;
+
+public static class AutoUISoundAttacher
+{
+    [MenuItem("Tools/�Զ��� UI ��Ч")]
+    public static void AttachToAllButtons()
+    {
+        var buttons = Object.FindObjectsOfType<Button>(true);
+        int count = 0;
+
+        foreach (var b in buttons)
+        {
+            if (b.GetComponent<UIButtonSound>() == null)
+            {
+                Undo.AddComponent<UIButtonSound>(b.gameObject);
+                count++;
+            }
+        }
+
+        Debug.Log($"[AutoUISound] �� {count} ����ť���� UIButtonSound");
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/MaterialPropertyInspector.cs
+=======================================
+using UnityEngine;
+using UnityEditor;
+using System.Text;
+
+public class MaterialPropertyInspector : EditorWindow
+{
+    private Material _mat;
+    private Vector2 _scroll;
+    private string _output = "";
+
+    [MenuItem("Tools/�������Բ鿴��")]
+    public static void Open()
+    {
+        GetWindow<MaterialPropertyInspector>("�������Բ鿴��");
+    }
+
+    void OnGUI()
+    {
+        EditorGUILayout.HelpBox("�ѵ��˵Ĳ������ϵ�����", MessageType.Info);
+
+        _mat = (Material)EditorGUILayout.ObjectField("����", _mat, typeof(Material), false);
+
+        if (GUILayout.Button("����") && _mat != null)
+            Analyze();
+
+        if (GUILayout.Button("����"))
+            EditorGUIUtility.systemCopyBuffer = _output;
+
+        _scroll = EditorGUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
+        _output = EditorGUILayout.TextArea(_output, GUILayout.ExpandHeight(true));
+        EditorGUILayout.EndScrollView();
+    }
+
+    void Analyze()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"����: {_mat.name}");
+        sb.AppendLine($"Shader: {_mat.shader.name}");
+        sb.AppendLine();
+
+        Shader s = _mat.shader;
+        int count = s.GetPropertyCount();
+        sb.AppendLine($"========= �������ԣ��� {count} ���� =========");
+
+        for (int i = 0; i < count; i++)
+        {
+            string name = s.GetPropertyName(i);
+            var type = s.GetPropertyType(i);
+            string valueStr = "";
+
+            try
+            {
+                switch (type)
+                {
+                    case UnityEngine.Rendering.ShaderPropertyType.Color:
+                        valueStr = _mat.GetColor(name).ToString();
+                        break;
+                    case UnityEngine.Rendering.ShaderPropertyType.Float:
+                    case UnityEngine.Rendering.ShaderPropertyType.Range:
+                        valueStr = _mat.GetFloat(name).ToString();
+                        break;
+                    case UnityEngine.Rendering.ShaderPropertyType.Vector:
+                        valueStr = _mat.GetVector(name).ToString();
+                        break;
+                    case UnityEngine.Rendering.ShaderPropertyType.Texture:
+                        var tex = _mat.GetTexture(name);
+                        valueStr = tex == null ? "null" : tex.name;
+                        break;
+                }
+            }
+            catch { }
+
+            sb.AppendLine($"  [{type}] {name} = {valueStr}");
+        }
+
+        _output = sb.ToString();
+        Debug.Log("�������");
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/ObjectInspector.cs
+=======================================
+using UnityEngine;
+using UnityEditor;
+using System.Text;
+using System.Collections.Generic;
+using System.Reflection;
+
+public class ObjectInspector : EditorWindow
+{
+    private Object _target;
+    private Vector2 _scroll;
+    private string _output = "";
+    private bool _includePrivate = true;
+
+    [MenuItem("Tools/��������")]
+    public static void Open()
+    {
+        GetWindow<ObjectInspector>("��������");
+    }
+
+    void OnGUI()
+    {
+        EditorGUILayout.HelpBox("�� Hierarchy ������塢Project ���Ԥ����/����/��Դ���ϵ�����Ŀ�", MessageType.Info);
+
+        // ��ק��
+        var dropRect = GUILayoutUtility.GetRect(0, 40, GUILayout.ExpandWidth(true));
+        GUI.Box(dropRect, _target == null ? "�϶�������" : _target.name);
+        var evt = Event.current;
+        if (dropRect.Contains(evt.mousePosition))
+        {
+            if (evt.type == EventType.DragUpdated)
+            {
+                DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+                evt.Use();
+            }
+            else if (evt.type == EventType.DragPerform)
+            {
+                DragAndDrop.AcceptDrag();
+                if (DragAndDrop.objectReferences.Length > 0)
+                {
+                    _target = DragAndDrop.objectReferences[0];
+                    Dump();
+                }
+                evt.Use();
+            }
+        }
+
+        _includePrivate = EditorGUILayout.Toggle("����˽���ֶ�", _includePrivate);
+
+        if (GUILayout.Button("�������", GUILayout.Height(24))) Dump();
+
+        if (GUILayout.Button("���Ƶ�������"))
+            EditorGUIUtility.systemCopyBuffer = _output;
+
+        _scroll = EditorGUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
+        _output = EditorGUILayout.TextArea(_output, GUILayout.ExpandHeight(true));
+        EditorGUILayout.EndScrollView();
+    }
+
+    void Dump()
+    {
+        if (_target == null) { _output = "û�ж���"; return; }
+
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine("======== ������ ========");
+
+        // GameObject / Prefab
+        GameObject go = _target as GameObject;
+        if (go == null)
+        {
+            // ���������
+            Component comp = _target as Component;
+            if (comp != null) go = comp.gameObject;
+        }
+
+        if (go != null)
+        {
+            sb.AppendLine($"����: {go.name}");
+            sb.AppendLine($"Layer: {LayerMask.LayerToName(go.layer)}");
+            sb.AppendLine($"Tag: {go.tag}");
+            sb.AppendLine($"Active: {go.activeSelf}");
+            sb.AppendLine($"Prefab: {(PrefabUtility.IsPartOfPrefabAsset(go) ? "��" : "��")}");
+            sb.AppendLine();
+
+            // ��ӡ�㼶�ṹ
+            sb.AppendLine("---- �㼶�ṹ ----");
+            DumpHierarchy(go.transform, 0, sb);
+            sb.AppendLine();
+
+            // ��ӡ�������
+            sb.AppendLine("---- ����б� ----");
+            foreach (var c in go.GetComponents<Component>())
+            {
+                if (c == null) { sb.AppendLine("  [Missing Script]"); continue; }
+                sb.AppendLine($"  {c.GetType().Name}");
+            }
+            sb.AppendLine();
+
+            // ��ӡÿ���������ϸ�ֶ�
+            sb.AppendLine("---- ������� ----");
+            foreach (var c in go.GetComponents<Component>())
+            {
+                if (c == null) continue;
+                DumpComponent(c, sb);
+                sb.AppendLine();
+            }
+        }
+        else
+        {
+            // ���� GameObject�������ǲ��ʡ�ScriptableObject ��
+            sb.AppendLine($"��Դ: {_target.name}");
+            sb.AppendLine($"����: {_target.GetType().Name}");
+            sb.AppendLine();
+            DumpObject(_target, sb, 0);
+        }
+
+        _output = sb.ToString();
+        Debug.Log("������: " + _target.name);
+    }
+
+    void DumpHierarchy(Transform t, int depth, StringBuilder sb)
+    {
+        string indent = new string(' ', depth * 2);
+        sb.AppendLine($"{indent}- {t.name}  Pos={t.localPosition}  Scale={t.localScale}");
+        foreach (Transform child in t)
+            DumpHierarchy(child, depth + 1, sb);
+    }
+
+    void DumpComponent(Component c, StringBuilder sb)
+    {
+        sb.AppendLine($"  [{c.GetType().Name}]");
+
+        // ���⴦��������
+        if (c is Renderer r)
+        {
+            sb.AppendLine($"    Material: {(r.sharedMaterial != null ? r.sharedMaterial.name : "��")}");
+            if (r.sharedMaterial != null)
+                sb.AppendLine($"    Shader: {r.sharedMaterial.shader.name}");
+        }
+        else if (c is TrailRenderer tr)
+        {
+            sb.AppendLine($"    Emitting: {tr.emitting}");
+            sb.AppendLine($"    Time: {tr.time}");
+            sb.AppendLine($"    WidthMultiplier: {tr.widthMultiplier}");
+            sb.AppendLine($"    Material: {(tr.sharedMaterial != null ? tr.sharedMaterial.name : "��")}");
+        }
+        else if (c is ParticleSystem ps)
+        {
+            sb.AppendLine($"    PlayOnAwake: {ps.main.playOnAwake}");
+            sb.AppendLine($"    Looping: {ps.main.loop}");
+            sb.AppendLine($"    Duration: {ps.main.duration}");
+            sb.AppendLine($"    StartLifetime: {ps.main.startLifetime.constant}");
+            sb.AppendLine($"    StartSpeed: {ps.main.startSpeed.constant}");
+            sb.AppendLine($"    StartSize: {ps.main.startSize.constant}");
+            sb.AppendLine($"    Emission Rate: {ps.emission.rateOverTime.constant}");
+            var psr = ps.GetComponent<ParticleSystemRenderer>();
+            if (psr != null)
+            {
+                sb.AppendLine($"    RenderMode: {psr.renderMode}");
+                sb.AppendLine($"    Mesh: {(psr.mesh != null ? psr.mesh.name : "��")}");
+                sb.AppendLine($"    Material: {(psr.sharedMaterial != null ? psr.sharedMaterial.name : "��")}");
+                if (psr.sharedMaterial != null)
+                    sb.AppendLine($"    Shader: {psr.sharedMaterial.shader.name}");
+            }
+        }
+        else if (c is LineRenderer lr)
+        {
+            sb.AppendLine($"    PositionCount: {lr.positionCount}");
+            sb.AppendLine($"    WidthMultiplier: {lr.widthMultiplier}");
+            sb.AppendLine($"    StartColor: {lr.startColor}");
+            sb.AppendLine($"    EndColor: {lr.endColor}");
+            sb.AppendLine($"    Material: {(lr.sharedMaterial != null ? lr.sharedMaterial.name : "��")}");
+            if (lr.sharedMaterial != null)
+                sb.AppendLine($"    Shader: {lr.sharedMaterial.shader.name}");
+        }
+
+        // �����ӡ�����ֶ�
+        var fields = c.GetType().GetFields(
+            BindingFlags.Public | BindingFlags.NonPublic |
+            BindingFlags.Instance | BindingFlags.DeclaredOnly);
+        foreach (var f in fields)
+        {
+            if (!_includePrivate && (f.IsPrivate || f.IsFamily)) continue;
+
+            object val = f.GetValue(c);
+            string valStr = FormatValue(val);
+            sb.AppendLine($"    {f.Name}: {valStr}");
+        }
+    }
+
+    void DumpObject(Object obj, StringBuilder sb, int depth)
+    {
+        var fields = obj.GetType().GetFields(
+            BindingFlags.Public | BindingFlags.NonPublic |
+            BindingFlags.Instance | BindingFlags.DeclaredOnly);
+        foreach (var f in fields)
+        {
+            if (!_includePrivate && (f.IsPrivate || f.IsFamily)) continue;
+            object val = f.GetValue(obj);
+            sb.AppendLine($"  {f.Name}: {FormatValue(val)}");
+        }
+    }
+
+    string FormatValue(object val)
+    {
+        if (val == null) return "null";
+        if (val is Object o) return $"{o.name} ({o.GetType().Name})";
+        if (val is Vector3 v) return $"({v.x:F2}, {v.y:F2}, {v.z:F2})";
+        if (val is Color c) return $"({c.r:F2}, {c.g:F2}, {c.b:F2}, {c.a:F2})";
+        return val.ToString();
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/PrefabStructureViewer.cs
+=======================================
+using UnityEngine;
+using UnityEditor;
+using UnityEngine.UI;
+using System.Text;
+
+public class PrefabStructureViewer : EditorWindow
+{
+    private GameObject _target;
+    private Vector2 _scroll;
+    private string _output = "";
+
+    [MenuItem("Tools/预制体结构查看器")]
+    public static void Open()
+    {
+        GetWindow<PrefabStructureViewer>("预制体结构查看器");
+    }
+
+    void OnGUI()
+    {
+        EditorGUILayout.HelpBox("把 Hierarchy 或 Project 里的物体拖到下面的框", MessageType.Info);
+
+        var dropRect = GUILayoutUtility.GetRect(0, 50, GUILayout.ExpandWidth(true));
+        GUI.Box(dropRect, _target == null ? "拖对象到这里" : _target.name);
+        var evt = Event.current;
+        if (dropRect.Contains(evt.mousePosition))
+        {
+            if (evt.type == EventType.DragUpdated)
+            {
+                DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+                evt.Use();
+            }
+            else if (evt.type == EventType.DragPerform)
+            {
+                DragAndDrop.AcceptDrag();
+                foreach (var obj in DragAndDrop.objectReferences)
+                {
+                    var go = obj as GameObject;
+                    if (go != null) { _target = go; Dump(); break; }
+                }
+                evt.Use();
+            }
+        }
+
+        EditorGUILayout.BeginHorizontal();
+        _target = (GameObject)EditorGUILayout.ObjectField("目标", _target, typeof(GameObject), true);
+        if (GUILayout.Button("刷新", GUILayout.Width(60))) Dump();
+        if (GUILayout.Button("复制", GUILayout.Width(60)))
+        {
+            EditorGUIUtility.systemCopyBuffer = _output;
+            Debug.Log("已复制到剪贴板");
+        }
+        EditorGUILayout.EndHorizontal();
+
+        _scroll = EditorGUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
+        _output = EditorGUILayout.TextArea(_output, GUILayout.ExpandHeight(true));
+        EditorGUILayout.EndScrollView();
+    }
+
+    void Dump()
+    {
+        if (_target == null) { _output = "没有目标"; return; }
+
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine($"=== {_target.name} ===");
+        sb.AppendLine($"Active: {_target.activeSelf}");
+        sb.AppendLine();
+        DumpTransform(_target.transform, 0, sb);
+        _output = sb.ToString();
+    }
+
+    void DumpTransform(Transform t, int depth, StringBuilder sb)
+    {
+        string indent = new string(' ', depth * 2);
+
+        sb.AppendLine($"{indent}[{t.name}]");
+        sb.AppendLine($"{indent}  Active:      {t.gameObject.activeSelf}");
+        sb.AppendLine($"{indent}  Local Pos:   ({t.localPosition.x:F2}, {t.localPosition.y:F2}, {t.localPosition.z:F2})");
+        sb.AppendLine($"{indent}  Local Scale: ({t.localScale.x:F2}, {t.localScale.y:F2}, {t.localScale.z:F2})");
+
+        // 检查 RectTransform 尺寸和锚点
+        var rt = t as RectTransform;
+        if (rt != null)
+        {
+            sb.AppendLine($"{indent}  Rect Size:   ({rt.sizeDelta.x:F1}, {rt.sizeDelta.y:F1})");
+            sb.AppendLine($"{indent}  Anchors:     Min({rt.anchorMin.x:F1}, {rt.anchorMin.y:F1}) Max({rt.anchorMax.x:F1}, {rt.anchorMax.y:F1})");
+        }
+
+        // 组件列表
+        var comps = t.GetComponents<Component>();
+        string compNames = "";
+        foreach (var c in comps)
+        {
+            if (c == null) { compNames += "[Missing] "; continue; }
+            compNames += c.GetType().Name + " ";
+        }
+        sb.AppendLine($"{indent}  Components:  {compNames}");
+
+        // 深度检查 Image 组件
+        var img = t.GetComponent<Image>();
+        if (img != null)
+        {
+            string spriteName = img.sprite == null ? "❌ NULL! (没选图片)" : img.sprite.name;
+            sb.AppendLine($"{indent}  [Image 检查]");
+            sb.AppendLine($"{indent}    Sprite:      {spriteName}");
+            sb.AppendLine($"{indent}    Color:       RGBA({img.color.r:F1}, {img.color.g:F1}, {img.color.b:F1}, {img.color.a:F1})");
+            sb.AppendLine($"{indent}    Type:        {img.type}");
+            if (img.type == Image.Type.Filled)
+            {
+                sb.AppendLine($"{indent}    FillMethod:  {img.fillMethod}");
+                sb.AppendLine($"{indent}    FillOrigin:  {img.fillOrigin}");
+                sb.AppendLine($"{indent}    FillAmount:  {img.fillAmount:F2}");
+            }
+        }
+
+        sb.AppendLine();
+
+        foreach (Transform child in t)
+            DumpTransform(child, depth + 1, sb);
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/SceneExporter.cs
+=======================================
+using UnityEngine;
+using UnityEditor;
+using UnityEditor.SceneManagement;
+using System.IO;
+using System.Text;
+
+public static class SceneExporter
+{
+    [MenuItem("Tools/����/��ǰ�����ṹ")]
+    public static void ExportScene()
+    {
+        string path = Path.Combine(Application.dataPath, "../Export/Scene_Export.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+
+        StringBuilder sb = new StringBuilder();
+        var scene = EditorSceneManager.GetActiveScene();
+        sb.AppendLine($"����: {scene.name}");
+        sb.AppendLine($"����������: {scene.rootCount}");
+        sb.AppendLine("=========================================");
+
+        foreach (var go in scene.GetRootGameObjects())
+            ExportGameObject(go, 0, sb);
+
+        File.WriteAllText(path, sb.ToString());
+        Debug.Log($"�����ѵ���: {path}");
+        EditorUtility.RevealInFinder(path);
+    }
+
+    static void ExportGameObject(GameObject go, int depth, StringBuilder sb)
+    {
+        string indent = new string(' ', depth * 2);
+        sb.AppendLine($"{indent}- {go.name}  [Layer: {LayerMask.LayerToName(go.layer)}]");
+        sb.AppendLine($"{indent}  Pos: {go.transform.position}  Scale: {go.transform.localScale}");
+
+        foreach (var comp in go.GetComponents<Component>())
+        {
+            if (comp == null) continue;
+            sb.AppendLine($"{indent}  Comp: {comp.GetType().Name}");
+        }
+
+        foreach (Transform child in go.transform)
+            ExportGameObject(child.gameObject, depth + 1, sb);
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/SceneInspector.cs
+=======================================
+using UnityEngine;
+using UnityEditor;
+using System.Text;
+using System.Collections.Generic;
+
+public class SceneInspector : EditorWindow
+{
+    private Vector2 _scroll;
+    private string _output = "";
+    private bool _showEnemy = true;
+    private bool _showTower = true;
+    private bool _showTrail = true;
+    private bool _showMaterial = false;
+
+    [MenuItem("Tools/���������")]
+    public static void Open()
+    {
+        GetWindow<SceneInspector>("���������");
+    }
+
+    void OnGUI()
+    {
+        EditorGUILayout.HelpBox("�㡾ɨ�衿�г����������йؼ������״̬�����ƻ��ͼ����", MessageType.Info);
+
+        EditorGUILayout.BeginHorizontal();
+        _showEnemy = GUILayout.Toggle(_showEnemy, "����", "Button", GUILayout.Width(60));
+        _showTower = GUILayout.Toggle(_showTower, "��", "Button", GUILayout.Width(60));
+        _showTrail = GUILayout.Toggle(_showTrail, "��β", "Button", GUILayout.Width(60));
+        _showMaterial = GUILayout.Toggle(_showMaterial, "����", "Button", GUILayout.Width(60));
+        EditorGUILayout.EndHorizontal();
+
+        if (GUILayout.Button("ɨ�賡��", GUILayout.Height(30))) Scan();
+
+        if (GUILayout.Button("���ƽ����������"))
+            EditorGUIUtility.systemCopyBuffer = _output;
+
+        _scroll = EditorGUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
+        _output = EditorGUILayout.TextArea(_output, GUILayout.ExpandHeight(true));
+        EditorGUILayout.EndScrollView();
+    }
+
+    void Scan()
+    {
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine("======== ������� ========");
+        sb.AppendLine("ʱ��: " + System.DateTime.Now.ToString("HH:mm:ss"));
+        sb.AppendLine();
+
+        // ����
+        if (_showEnemy)
+        {
+            sb.AppendLine("---- ���� (Enemy.cs) ----");
+            var enemies = FindObjectsOfType<Enemy>();
+            sb.AppendLine($"����: {enemies.Length}");
+            foreach (var e in enemies)
+            {
+                sb.AppendLine($"  [{e.name}]");
+                sb.AppendLine($"    Position: {e.transform.position}");
+                sb.AppendLine($"    MoveSpeed: {e.moveSpeed}");
+                var renderer = e.GetComponentInChildren<Renderer>();
+                if (renderer != null && renderer.sharedMaterial != null)
+                    sb.AppendLine($"    Material: {renderer.sharedMaterial.name} (shader: {renderer.sharedMaterial.shader.name})");
+                var col = e.GetComponentInChildren<Collider>();
+                sb.AppendLine($"    Collider: {(col != null ? col.GetType().Name : "��")}");
+                sb.AppendLine();
+            }
+        }
+
+        // ��
+        if (_showTower)
+        {
+            sb.AppendLine("---- �� (Tower.cs) ----");
+            var towers = FindObjectsOfType<Tower>();
+            sb.AppendLine($"����: {towers.Length}");
+            foreach (var t in towers)
+            {
+                sb.AppendLine($"  [{t.name}]");
+                sb.AppendLine($"    Position: {t.transform.position}");
+                if (t.data != null)
+                {
+                    sb.AppendLine($"    Data: {t.data.name}");
+                    sb.AppendLine($"    AttackType: {t.data.attackType}");
+                    sb.AppendLine($"    CurrentLevel: {t.CurrentLevel + 1} / {t.data.MaxLevel}");
+
+                    var stats = t.data.GetStats(t.CurrentLevel);
+                    if (stats != null)
+                    {
+                        sb.AppendLine($"    Range: {stats.range}");
+                        sb.AppendLine($"    Damage: {stats.damage}");
+                        sb.AppendLine($"    AttackInterval: {stats.attackInterval}");
+                        sb.AppendLine($"    SlowMul: {stats.slowMultiplier}, SlowDur: {stats.slowDuration}");
+                        sb.AppendLine($"    NextUpgradeCost: {stats.upgradeCost}");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"    Stats: ��δ���á�");
+                    }
+                }
+                else
+                {
+                    sb.AppendLine($"    Data: ��δ����!��");
+                }
+                var ps = t.GetComponentInChildren<ParticleSystem>();
+                sb.AppendLine($"    ����ϵͳ: {(ps != null ? "��" : "��")}");
+                sb.AppendLine();
+            }
+        }
+
+        // ��β
+        if (_showTrail)
+        {
+            sb.AppendLine("---- ��β (TrailRenderer) ----");
+            var all = FindObjectsOfType<TrailRenderer>();
+            sb.AppendLine($"����: {all.Length}");
+            foreach (var tr in all)
+            {
+                sb.AppendLine($"  [{tr.name}] (parent: {tr.transform.parent?.name})");
+                sb.AppendLine($"    Emitting: {tr.emitting}");
+                sb.AppendLine($"    Time: {tr.time}");
+                sb.AppendLine($"    WidthMultiplier: {tr.widthMultiplier}");
+                if (tr.sharedMaterial != null)
+                    sb.AppendLine($"    Material: {tr.sharedMaterial.name} (shader: {tr.sharedMaterial.shader.name})");
+                else
+                    sb.AppendLine($"    Material: ����!��");
+                sb.AppendLine();
+            }
+        }
+
+        // ����
+        if (_showMaterial)
+        {
+            sb.AppendLine("---- ���������в��� ----");
+            var renderers = FindObjectsOfType<Renderer>();
+            HashSet<string> seen = new HashSet<string>();
+            foreach (var r in renderers)
+            {
+                var m = r.sharedMaterial;
+                if (m == null || seen.Contains(m.name)) continue;
+                seen.Add(m.name);
+                sb.AppendLine($"  {m.name}: {m.shader.name}");
+                if (m.HasProperty("_BaseColor"))
+                    sb.AppendLine($"    _BaseColor: {m.GetColor("_BaseColor")}");
+                if (m.HasProperty("_Color"))
+                    sb.AppendLine($"    _Color: {m.GetColor("_Color")}");
+            }
+        }
+
+        _output = sb.ToString();
+        Debug.Log("����ɨ�����");
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/ScriptExporter.cs
+=======================================
+using UnityEngine;
+using UnityEditor;
+using System.IO;
+using System.Text;
+
+public static class ScriptExporter
+{
+    [MenuItem("Tools/����/���нű�")]
+    public static void ExportScripts()
+    {
+        string[] guids = AssetDatabase.FindAssets("t:MonoScript");
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine($"�� {guids.Length} ���ű�\n");
+
+        foreach (var guid in guids)
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            string fullPath = Path.GetFullPath(path);
+            if (!File.Exists(fullPath)) continue;
+
+            sb.AppendLine("=========================================");
+            sb.AppendLine($"// �ļ�: {path}");
+            sb.AppendLine("=========================================");
+            sb.AppendLine(File.ReadAllText(fullPath));
+            sb.AppendLine();
+        }
+
+        string outPath = Path.Combine(Application.dataPath, "../Export/AllScripts.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(outPath));
+        File.WriteAllText(outPath, sb.ToString());
+        Debug.Log($"�ű��ѵ���: {outPath}");
+        EditorUtility.RevealInFinder(outPath);
+    }
+}
+
+=======================================
+// Assets/Scripts/Editor/ScriptViewerWindow.cs
+=======================================
+using UnityEngine;
+using UnityEditor;
+using System.IO;
+using System.Text;
+
+public class ScriptViewerWindow : EditorWindow
+{
+    private string folderPath = "Assets/Scripts";
+    private string output = "";
+    private Vector2 scrollPos;
+
+    [MenuItem("Tools/�ű��鿴��")]
+    public static void Open()
+    {
+        GetWindow<ScriptViewerWindow>("�ű��鿴��");
+    }
+
+    void OnGUI()
+    {
+        EditorGUILayout.HelpBox("�� Assets/Scripts �ļ��д� Project �����ϵ�������ֶ�����·��", MessageType.Info);
+
+        // ��ק����
+        var dropRect = GUILayoutUtility.GetRect(0, 28, GUILayout.ExpandWidth(true));
+        GUI.Box(dropRect, "��ק�ļ��е�����");
+        var evt = Event.current;
+        if (dropRect.Contains(evt.mousePosition))
+        {
+            if (evt.type == EventType.DragUpdated)
+            {
+                DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+                evt.Use();
+            }
+            else if (evt.type == EventType.DragPerform)
+            {
+                DragAndDrop.AcceptDrag();
+                foreach (var obj in DragAndDrop.objectReferences)
+                {
+                    string p = AssetDatabase.GetAssetPath(obj);
+                    if (Directory.Exists(p)) folderPath = p;
+                }
+                evt.Use();
+            }
+        }
+
+        EditorGUILayout.BeginHorizontal();
+        folderPath = EditorGUILayout.TextField("�ļ���", folderPath);
+        if (GUILayout.Button("���", GUILayout.Width(60)))
+        {
+            string p = EditorUtility.OpenFolderPanel("ѡ��ű��ļ���", Application.dataPath, "");
+            if (!string.IsNullOrEmpty(p))
+            {
+                if (p.StartsWith(Application.dataPath))
+                    folderPath = "Assets" + p.Substring(Application.dataPath.Length);
+                else
+                    folderPath = p;
+            }
+        }
+        EditorGUILayout.EndHorizontal();
+
+        if (GUILayout.Button("��ȡ", GUILayout.Height(28)))
+            ReadScripts();
+
+        EditorGUILayout.LabelField($"���ݳ��ȣ�{output.Length} �ַ�");
+
+        scrollPos = EditorGUILayout.BeginScrollView(scrollPos, GUILayout.ExpandHeight(true));
+        output = EditorGUILayout.TextArea(output, GUILayout.ExpandHeight(true));
+        EditorGUILayout.EndScrollView();
+
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("ȫѡ�����Ƶ�������"))
+        {
+            EditorGUIUtility.systemCopyBuffer = output;
+            Debug.Log("�Ѹ��ƣ�");
+        }
+        if (GUILayout.Button("���"))
+        {
+            output = "";
+        }
+        EditorGUILayout.EndHorizontal();
+    }
+
+    void ReadScripts()
+    {
+        output = "";
+        if (string.IsNullOrEmpty(folderPath) || !Directory.Exists(folderPath))
+        {
+            output = "�ļ��в����ڣ�" + folderPath;
+            return;
+        }
+
+        string[] files = Directory.GetFiles(folderPath, "*.cs", SearchOption.AllDirectories);
+        var sb = new StringBuilder();
+        sb.AppendLine($"�ļ��У�{folderPath}");
+        sb.AppendLine($"�� {files.Length} ���ű�\n");
+
+        foreach (var f in files)
+        {
+            string rel = f.Replace("\\", "/");
+            if (rel.StartsWith(Application.dataPath))
+                rel = "Assets" + rel.Substring(Application.dataPath.Length);
+
+            sb.AppendLine("=======================================");
+            sb.AppendLine($"// {rel}");
+            sb.AppendLine("=======================================");
+
+            // ���ռ��������ȡ��
+            // �ȳ�����ϵͳĬ�ϱ��루GBK������������������滻����˵���� UTF-8���� UTF-8 ��
+            string content = File.ReadAllText(f, Encoding.Default);
+            if (content.Contains("\uFFFD") || content.Contains("��"))
+            {
+                content = File.ReadAllText(f, Encoding.UTF8);
+            }
+            sb.AppendLine(content);
+            sb.AppendLine();
+        }
+        output = sb.ToString();
+
+        // ���ռ�������д�롿�Զ��ڸ�Ŀ¼����һ���� BOM �� UTF-8 �ļ�
+        string outPath = Path.Combine(Application.dataPath, "../Export_Scripts.txt");
+        File.WriteAllText(outPath, output, new UTF8Encoding(true));
+
+        Debug.Log($"��ȡ��ɣ��� {files.Length} ���ű����Ѱ�ȫ������ {outPath}");
+        EditorUtility.RevealInFinder(outPath);
+    }
+}
+
+=======================================
+// Assets/Scripts/Enemies/Enemy.cs
+=======================================
+using UnityEngine;
+using Unity.Netcode;
+
+public class Enemy : NetworkBehaviour
+{
+    [Header("����")]
+    public float moveSpeed = 5f;
+    public int damage = 1;
+    public int goldReward = 15;
+    public int maxHealth = 200;
+
+    [Header("����Ѫ��")]
+    public NetworkVariable<int> currentHealthNV = new NetworkVariable<int>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    [Header("�������״̬")]
+    public NetworkVariable<bool> isSlowedNV = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    [Header("·��")]
+    public Transform[] waypoints;
+
+    private int _currentIndex = 0;
+    private float _arriveThreshold = 0.2f;
+
+    private float _speedMultiplier = 1f;
+    private float _slowTimer = 0f;
+    private float _stunTimer = 0f;
+
+    private bool _isDead = false;
+    public bool IsDead => _isDead;
+
+    [Header("�����Ӿ�")]
+    public Color slowTint = new Color(0.4f, 0.7f, 1f);
+
+    [Header("Ѫ������ (��ߡ��䳤�����)")]
+    public float healthBarHeight = 6.0f;      // ���޸ġ��߶ȸ��ߣ�ԭ�� 4.5��
+    public float healthBarWidth = 3.5f;       // ���޸ġ���ȸ�����ԭ�� 2.0��
+    public float healthBarThickness = 0.4f;   // ���޸ġ���ȱ���ԭ�� 0.25��
+    public Color healthBarFill = new Color(0.9f, 0.2f, 0.2f, 1f);
+
+    private MeshRenderer[] _renderers;
+    private Material[] _sharedMaterials;
+    private string[] _colorPropertyNames;
+    private Color[] _originalColors;
+    private MaterialPropertyBlock _mpb;
+
+    private TrailRenderer _trail;
+
+    void Awake()
+    {
+        _mpb = new MaterialPropertyBlock();
+    }
+
+    public override void OnNetworkSpawn()
+    {
+        if (IsServer)
+            currentHealthNV.Value = maxHealth;
+
+        currentHealthNV.OnValueChanged += HandleHealthChanged;
+        isSlowedNV.OnValueChanged += HandleSlowChanged;
+
+        _renderers = GetComponentsInChildren<MeshRenderer>(true);
+        int n = _renderers.Length;
+        _sharedMaterials = new Material[n];
+        _colorPropertyNames = new string[n];
+        _originalColors = new Color[n];
+
+        for (int i = 0; i < n; i++)
+        {
+            _sharedMaterials[i] = _renderers[i].sharedMaterial;
+            var mat = _sharedMaterials[i];
+
+            if (mat == null)
+            {
+                _colorPropertyNames[i] = null;
+                _originalColors[i] = Color.white;
+                continue;
+            }
+
+            if (mat.HasProperty("baseColorFactor"))
+            {
+                _colorPropertyNames[i] = "baseColorFactor";
+                _originalColors[i] = mat.GetColor("baseColorFactor");
+            }
+            else if (mat.HasProperty("_BaseColor"))
+            {
+                _colorPropertyNames[i] = "_BaseColor";
+                _originalColors[i] = mat.GetColor("_BaseColor");
+            }
+            else if (mat.HasProperty("_Color"))
+            {
+                _colorPropertyNames[i] = "_Color";
+                _originalColors[i] = mat.GetColor("_Color");
+            }
+            else
+            {
+                _colorPropertyNames[i] = null;
+                _originalColors[i] = Color.white;
+            }
+        }
+
+        _trail = GetComponentInChildren<TrailRenderer>();
+        if (_trail != null) _trail.emitting = false;
+
+        ApplySlowVisual(isSlowedNV.Value);
+
+        if (HealthBarManager.Instance != null)
+        {
+            HealthBarManager.Instance.AddBar(this, healthBarWidth, healthBarThickness, healthBarFill);
+            HealthBarManager.Instance.UpdateHealth(this, 1f);
+        }
+
+        if (EnemyManager.Instance != null) EnemyManager.Instance.Register(this);
+
+        SoundManager.Instance?.Play("��������");
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        currentHealthNV.OnValueChanged -= HandleHealthChanged;
+        isSlowedNV.OnValueChanged -= HandleSlowChanged;
+
+        if (HealthBarManager.Instance != null)
+            HealthBarManager.Instance.RemoveBar(this);
+
+        if (EnemyManager.Instance != null) EnemyManager.Instance.Unregister(this);
+    }
+
+    private void HandleHealthChanged(int oldV, int newV)
+    {
+        if (HealthBarManager.Instance != null)
+            HealthBarManager.Instance.UpdateHealth(this, Mathf.Clamp01((float)newV / maxHealth));
+
+        if (newV < oldV)
+        {
+            if (newV <= 0)
+                SoundManager.Instance?.Play("��������");
+            else
+                SoundManager.Instance?.Play("�����ܻ�");
+        }
+    }
+
+    private void HandleSlowChanged(bool oldV, bool newV)
+    {
+        ApplySlowVisual(newV);
+    }
+
+    private void ApplySlowVisual(bool slowed)
+    {
+        if (_renderers == null) return;
+
+        for (int i = 0; i < _renderers.Length; i++)
+        {
+            if (_colorPropertyNames[i] == null) continue;
+
+            Color c = slowed ? slowTint : _originalColors[i];
+            _mpb.SetColor(_colorPropertyNames[i], c);
+            _renderers[i].SetPropertyBlock(_mpb);
+        }
+
+        if (_trail != null) _trail.emitting = slowed;
+    }
+
+    public void ApplySlow(float multiplier, float duration)
+    {
+        _speedMultiplier = Mathf.Min(_speedMultiplier, multiplier);
+        _slowTimer = Mathf.Max(_slowTimer, duration);
+        if (IsServer) isSlowedNV.Value = true;
+    }
+
+    public void ApplyStun(float duration)
+    {
+        _stunTimer = Mathf.Max(_stunTimer, duration);
+    }
+
+    void Update()
+    {
+        if (!IsServer) return;
+        if (_isDead) return;
+
+        if (_slowTimer > 0f)
+        {
+            _slowTimer -= Time.deltaTime;
+            if (_slowTimer <= 0f)
+            {
+                _speedMultiplier = 1f;
+                if (IsServer) isSlowedNV.Value = false;
+            }
+        }
+
+        bool isStunned = false;
+        if (_stunTimer > 0f)
+        {
+            _stunTimer -= Time.deltaTime;
+            isStunned = true;
+        }
+
+        if (waypoints == null || waypoints.Length == 0) return;
+
+        Transform target = waypoints[_currentIndex];
+        Vector3 dir = target.position - transform.position;
+        dir.y = 0f;
+
+        if (dir.magnitude <= _arriveThreshold)
+        {
+            _currentIndex++;
+            if (_currentIndex >= waypoints.Length)
+            {
+                ReachEnd();
+                return;
+            }
+        }
+        else
+        {
+            Vector3 moveDir = dir.normalized;
+            if (!isStunned)
+            {
+                float actualSpeed = moveSpeed * _speedMultiplier;
+                transform.position += moveDir * actualSpeed * Time.deltaTime;
+            }
+            if (moveDir != Vector3.zero)
+                transform.rotation = Quaternion.LookRotation(moveDir);
+        }
+    }
+
+    private void ReachEnd()
+    {
+        if (!IsServer) return;
+        if (_isDead) return;
+        _isDead = true;
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.TakeDamage(damage);
+
+        PlaySoundClientRpc("���˵��յ�");
+        DespawnSelf();
+    }
+
+    public void SetPath(Transform[] path)
+    {
+        waypoints = path;
+        _currentIndex = 0;
+    }
+
+    public void TakeDamage(int amount)
+    {
+        if (!IsServer) return;
+        if (_isDead) return;
+
+        currentHealthNV.Value -= amount;
+        if (currentHealthNV.Value <= 0) Die();
+    }
+
+    private void Die()
+    {
+        if (!IsServer) return;
+        if (_isDead) return;
+        _isDead = true;
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.AddGold(goldReward);
+
+        DespawnSelf();
+    }
+
+    private void DespawnSelf()
+    {
+        if (NetworkObject != null && NetworkObject.IsSpawned)
+            NetworkObject.Despawn(true);
+        else
+            Destroy(gameObject);
+    }
+
+    [ClientRpc]
+    private void PlaySoundClientRpc(string soundName)
+    {
+        SoundManager.Instance?.Play(soundName);
+    }
+}
+
+=======================================
+// Assets/Scripts/Enemies/EnemySpawner.cs
+=======================================
+using UnityEngine;
+using System.Collections;
+using Unity.Netcode;
+
+public class EnemySpawner : MonoBehaviour
+{
+    [System.Serializable]
+    public class WaveConfig
+    {
+        public int enemyCount = 5;
+        public float spawnInterval = 1f;
+    }
+
+    [Header("Ԥ����")]
+    public GameObject enemyPrefab;
+
+    [Header("·��")]
+    public Transform[] waypoints;
+
+    [Header("��������")]
+    public WaveConfig[] waves;
+    public float timeBetweenWaves = 5f;
+    public float startDelay = 3f;
+
+    [Header("����״̬")]
+    public int currentWaveIndex = -1;
+    public bool allWavesDone = false;
+
+    private bool _hasStarted = false;
+
+    // ���� GameManager �Ե� ClientRpc�����Լ����� NetworkBehaviour���� GameManager �ã�
+    private GameManager GM => GameManager.Instance;
+
+    void Start() { }
+
+    public void StartWaves()
+    {
+        if (_hasStarted) return;
+        if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsServer) return;
+
+        _hasStarted = true;
+        StartCoroutine(RunWaves());
+    }
+
+    IEnumerator RunWaves()
+    {
+        yield return new WaitForSeconds(startDelay);
+
+        for (int w = 0; w < waves.Length; w++)
+        {
+            if (GameManager.Instance != null && GameManager.Instance.IsGameOver) yield break;
+
+            currentWaveIndex = w;
+            UpdateWaveUI();
+
+            for (int i = 0; i < waves[w].enemyCount; i++)
+            {
+                if (GameManager.Instance != null && GameManager.Instance.IsGameOver) yield break;
+
+                Spawn();
+                yield return new WaitForSeconds(waves[w].spawnInterval);
+            }
+
+            while (EnemyManager.Instance != null && EnemyManager.Instance.AliveCount > 0)
+            {
+                if (GameManager.Instance != null && GameManager.Instance.IsGameOver) yield break;
+                yield return null;
+            }
+
+            if (w < waves.Length - 1)
+            {
+                if (GM != null) GM.PlaySoundAll("�������");
+                yield return new WaitForSeconds(timeBetweenWaves);
+            }
+        }
+
+        allWavesDone = true;
+
+        if (GameManager.Instance != null && !GameManager.Instance.IsGameOver)
+            GameManager.Instance.Victory();
+    }
+
+    private void Spawn()
+    {
+        if (enemyPrefab == null || waypoints == null || waypoints.Length < 2) return;
+
+        Vector3 spawnPos = waypoints[0].position;
+        GameObject obj = Instantiate(enemyPrefab, spawnPos, Quaternion.identity);
+
+        Enemy enemy = obj.GetComponent<Enemy>();
+        if (enemy != null) enemy.SetPath(waypoints);
+
+        NetworkObject no = obj.GetComponent<NetworkObject>();
+        if (no != null) no.Spawn();
+    }
+
+    private void UpdateWaveUI()
+    {
+        if (GameManager.Instance != null)
+            GameManager.Instance.SetWaveInfo(currentWaveIndex + 1, waves.Length);
+
+        // �㲥"������Ϯ"��Ч
+        if (GM != null) GM.PlaySoundAll("������Ϯ");
+    }
+}
+
+=======================================
+// Assets/Scripts/Path/PathRenderer.cs
+=======================================
+using UnityEngine;
+using System.Collections.Generic;
+
+public class PathRenderer : MonoBehaviour
+{
+    [Header("Ԥ����")]
+    public GameObject roadPrefab;
+    public GameObject startPrefab;
+    public GameObject endPrefab;
+
+    [Header("�ߴ�")]
+    public float roadWidth = 5f;
+    public float roadHeight = 0.1f;
+
+    [Header("Waypoints��������Զ����������ң�")]
+    public Transform[] waypoints;
+
+    [ContextMenu("����·��")]
+    public void GenerateRoad()
+    {
+        // 1. �Զ���ȡ Waypoints
+        if (waypoints == null || waypoints.Length < 2)
+        {
+            var list = new List<Transform>();
+            foreach (Transform child in transform)
+            {
+                if (child.name.StartsWith("Waypoint")) list.Add(child);
+            }
+            list.Sort((a, b) => string.Compare(a.name, b.name, System.StringComparison.Ordinal));
+            waypoints = list.ToArray();
+        }
+
+        if (waypoints.Length < 2)
+        {
+            Debug.LogError("Waypoint �������㣬������Ҫ 2 ����");
+            return;
+        }
+
+        // 2. �����һ�����ɵ�·
+        Transform old = transform.Find("GeneratedRoad");
+        if (old != null) DestroyImmediate(old.gameObject);
+
+        // 3. �½�������
+        GameObject root = new GameObject("GeneratedRoad");
+        root.transform.SetParent(transform);
+        root.transform.position = Vector3.zero;
+
+        // 4. ���
+        if (startPrefab != null)
+        {
+            GameObject start = Instantiate(startPrefab, waypoints[0].position, Quaternion.identity, root.transform);
+            start.name = "Start";
+        }
+
+        // 5. �м�·�棺��������
+        for (int i = 0; i < waypoints.Length - 1; i++)
+        {
+            Vector3 a = waypoints[i].position;
+            Vector3 b = waypoints[i + 1].position;
+            Vector3 dir = (b - a).normalized;
+            float dist = Vector3.Distance(a, b);
+
+            // �� roadWidth �����ߣ��������
+            int stepCount = Mathf.RoundToInt(dist / roadWidth);
+            for (int s = 0; s < stepCount; s++)
+            {
+                Vector3 pos = a + dir * (roadWidth * s); // �� a �㿪ʼ��ÿ����һ��
+                Quaternion rot = Quaternion.LookRotation(dir);
+
+                GameObject road = Instantiate(roadPrefab, pos, rot, root.transform);
+                road.name = "Road_" + i + "_" + s;
+                // ��Ԥ����ԭ���Ĵ�С��һ�񣩣�������
+            }
+        }
+
+        // 6. �յ�
+        if (endPrefab != null)
+        {
+            GameObject end = Instantiate(endPrefab, waypoints[waypoints.Length - 1].position, Quaternion.identity, root.transform);
+            end.name = "End";
+        }
+
+        Debug.Log("·��������ϣ��� " + (waypoints.Length - 1) + " �Σ���������");
+    }
+}
+
+=======================================
+// Assets/Scripts/Player/PlayerController.cs
+=======================================
+using UnityEngine;
+using UnityEngine.EventSystems;
+using Unity.Netcode;
+
+public class PlayerController : NetworkBehaviour
+{
+    [Header("�ƶ�")]
+    public float moveSpeed = 20f;
+    public float arriveThreshold = 0.1f;
+    public float rotateSpeed = 10f;
+
+    [Header("��ͼ�߽� (����150x100)")]
+    public float mapHalfSizeX = 70f;
+    public float mapHalfSizeZ = 45f;
+
+    [Header("��������")]
+    public float cellSize = 5f;
+    public GameObject buildPreviewPrefab;
+
+    [Header("״̬")]
+    public bool canMove = true;
+    public bool canShowPreview = true;
+
+    public bool IsMouseOnRoad { get; private set; } = false;
+
+    private Vector3 _targetPosition;
+    private bool _hasTarget = false;
+    private Vector3 _currentGridCenter;
+    private bool _isMouseOnGround = false;
+
+    // ���Ż�����һ֡���λ�ã������ж�����Ƿ��ƶ�
+    private Vector3 _lastMousePosition;
+
+    [Header("������")]
+    public Vector3 spawnPosClient0 = new Vector3(-30, 10, 20);
+    public Vector3 spawnPosClient1 = new Vector3(30, 10, 20);
+
+    void Start()
+    {
+        _targetPosition = transform.position;
+        _lastMousePosition = Input.mousePosition;   // ���Ż�����ʼ��
+    }
+
+    void Update()
+    {
+        if (!IsOwner) return;
+        if (!canMove) return;
+
+        UpdateMouseRay();
+        UpdateMovement();
+    }
+
+    public override void OnNetworkSpawn()
+    {
+        if (IsOwner)
+        {
+            Vector3 spawn = OwnerClientId == 0 ? spawnPosClient0 : spawnPosClient1;
+            transform.position = spawn;
+
+            if (buildPreviewPrefab == null)
+            {
+                var preview = GameObject.Find("BuildPreview");
+                if (preview != null)
+                {
+                    buildPreviewPrefab = preview;
+                    buildPreviewPrefab.SetActive(false);
+                }
+            }
+
+            if (BuildManager.Instance != null)
+                BuildManager.Instance.player = this;
+        }
+    }
+
+    private Enemy GetEnemyUnderMouse()
+    {
+        if (EnemyManager.Instance == null) return null;
+
+        float bestDist = 80f;
+        Enemy best = null;
+
+        // ���޸ġ�ʹ�� EnemyManager ���б�
+        var all = EnemyManager.Instance.GetAllEnemies();
+        foreach (var e in all)
+        {
+            if (e == null || e.IsDead) continue;
+
+            Vector3 sp = Camera.main.WorldToScreenPoint(e.transform.position);
+            if (sp.z < 0f) continue;
+
+            float d = Vector2.Distance(new Vector2(sp.x, sp.y), Input.mousePosition);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best = e;
+            }
+        }
+        return best;
+    }
+
+    // ���Ż���ÿ֡��ڣ�ֻ������ƶ�ʱ���� hover�����ÿ֡���
+    private void UpdateMouseRay()
+    {
+        Vector3 mousePos = Input.mousePosition;
+        // 0.01 ƽ��Լ���� 0.1 ���أ��㹻�����ֹ��˶���
+        bool mouseMoved = (mousePos - _lastMousePosition).sqrMagnitude > 0.01f;
+        _lastMousePosition = mousePos;
+
+        if (mouseMoved)
+        {
+            UpdateMouseHover();
+        }
+
+        // ���Ż������������ÿִ֡��
+        // Input.GetMouseButtonDown ���¼�ʽ�ģ���겻��Ҳ�ܲ��񣬲���©���
+        if (Input.GetMouseButtonDown(0))
+        {
+            // ˫�ر��գ��Ȳ� UI���ٲ��Ƿ��ڵ���
+            if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) return;
+            if (!_isMouseOnGround) return;
+            HandleClick();
+        }
+    }
+
+    // ���Ż���ԭ�� UpdateMouseRay ���"���"�����ȫ���߼�������ֻ������ƶ�ʱִ��
+    private void UpdateMouseHover()
+    {
+        if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
+        {
+            if (buildPreviewPrefab != null) buildPreviewPrefab.SetActive(false);
+            IsMouseOnRoad = false;
+            _isMouseOnGround = false;   // ���Ż����� UI �Ͳ����ڵ��棨��ԭ����δ�� bug��
+            return;
+        }
+
+        Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+        if (Physics.Raycast(ray, out RaycastHit hit, 500f))
+        {
+            Vector3 point = hit.point;
+            float gridX = Mathf.RoundToInt(point.x / cellSize) * cellSize;
+            float gridZ = Mathf.RoundToInt(point.z / cellSize) * cellSize;
+            _currentGridCenter = new Vector3(gridX, 0.05f, gridZ);
+
+            _currentGridCenter.x = Mathf.Clamp(_currentGridCenter.x, -mapHalfSizeX, mapHalfSizeX);
+            _currentGridCenter.z = Mathf.Clamp(_currentGridCenter.z, -mapHalfSizeZ, mapHalfSizeZ);
+
+            _isMouseOnGround = true;
+
+            int roadLayer = LayerMask.NameToLayer("Road");
+            Vector3 checkCenter = _currentGridCenter + Vector3.up * 1f;
+            Vector3 halfExtents = new Vector3(2.4f, 1f, 2.4f);
+            IsMouseOnRoad = Physics.CheckBox(checkCenter, halfExtents, Quaternion.identity, 1 << roadLayer);
+
+            bool hasTower = false;
+            if (BuildManager.Instance != null)
+            {
+                var key = BuildManager.Instance.WorldToGrid(_currentGridCenter);
+                var existing = BuildManager.Instance.GetTowerAt(key);
+                if (existing != null && existing.IsBuilt) hasTower = true;
+            }
+
+            if (canShowPreview && buildPreviewPrefab != null && !IsMouseOnRoad && !hasTower)
+            {
+                buildPreviewPrefab.SetActive(true);
+                buildPreviewPrefab.transform.position = _currentGridCenter;
+            }
+            else if (buildPreviewPrefab != null)
+            {
+                buildPreviewPrefab.SetActive(false);
+            }
+        }
+        else
+        {
+            _isMouseOnGround = false;
+            IsMouseOnRoad = false;
+            if (buildPreviewPrefab != null) buildPreviewPrefab.SetActive(false);
+        }
+    }
+
+    // ���Ż���ԭ UpdateMouseRay ���"�������"����������ɷ���
+    private void HandleClick()
+    {
+        if (BuildManager.Instance != null &&
+            (BuildManager.Instance.IsMenuOpen || BuildManager.Instance.IsUpgradePanelOpen))
+            return;
+
+        if (BuildManager.Instance != null)
+        {
+            var key = BuildManager.Instance.WorldToGrid(_currentGridCenter);
+            var tower = BuildManager.Instance.GetTowerAt(key);
+            if (tower != null && tower.IsBuilt)
+            {
+                if (TowerRangeIndicator.Instance != null)
+                    TowerRangeIndicator.Instance.Show(tower.transform.position, tower.GetCurrentRange());
+                return;
+            }
+        }
+
+        if (LockOnManager.Instance != null)
+        {
+            Enemy clicked = GetEnemyUnderMouse();
+            if (clicked != null)
+            {
+                LockOnManager.Instance.RequestLock(clicked);
+                return;
+            }
+        }
+
+        if (TowerRangeIndicator.Instance != null)
+            TowerRangeIndicator.Instance.Hide();
+
+        MoveTo(_currentGridCenter);
+    }
+
+    public void MoveTo(Vector3 targetPos)
+    {
+        SoundManager.Instance?.Play("����ƶ�");
+        Vector3 target = targetPos;
+        target.y = transform.position.y;
+        target.x = Mathf.Clamp(target.x, -mapHalfSizeX, mapHalfSizeX);
+        target.z = Mathf.Clamp(target.z, -mapHalfSizeZ, mapHalfSizeZ);
+        _targetPosition = target;
+        _hasTarget = true;
+    }
+
+    private void UpdateMovement()
+    {
+        if (_hasTarget)
+        {
+            Vector3 dir = _targetPosition - transform.position;
+            dir.y = 0f;
+
+            if (dir.magnitude <= arriveThreshold)
+            {
+                _hasTarget = false;
+            }
+            else
+            {
+                Vector3 moveDir = dir.normalized;
+                transform.position += moveDir * moveSpeed * Time.deltaTime;
+                if (moveDir != Vector3.zero)
+                {
+                    Quaternion targetRot = Quaternion.LookRotation(moveDir);
+                    transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, rotateSpeed * Time.deltaTime);
+                }
+            }
+        }
+    }
+}
+
+=======================================
+// Assets/Scripts/Towers/BuildDustParticles.cs
+=======================================
+using UnityEngine;
+
+public class BuildDustParticles : MonoBehaviour
+{
+    // ���Ż�����̬���棬��������Ч������һ��
+    private static Mesh _cachedSphereMesh;
+    private static Material _cachedMaterial;
+
+    public static void Spawn(Vector3 position)
+    {
+        GameObject obj = new GameObject("BuildDustFX");
+        obj.transform.position = position;
+        obj.AddComponent<BuildDustParticles>().Setup();
+    }
+
+    void Setup()
+    {
+        var ps = gameObject.AddComponent<ParticleSystem>();
+
+        // ������������ֹͣ������"�������޸� duration"�ľ���
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+
+        var main = ps.main;
+        main.duration = 0.5f;
+        main.loop = false;
+        main.playOnAwake = false;
+        main.startLifetime = 1.2f;      // ԭ�� 0.8����ø���
+        main.startSpeed = 6f;           // ԭ�� 3.5���ɵø�Զ
+        main.startSize = 1.2f;          // ԭ�� 0.6�����ӱ������
+        main.startColor = new Color(0.55f, 0.4f, 0.25f, 1f);
+        main.gravityModifier = 0.6f;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+
+        var emission = ps.emission;
+        emission.rateOverTime = 0;
+        emission.SetBursts(new ParticleSystem.Burst[]
+        {
+          new ParticleSystem.Burst(0f, 60)   // ԭ�� 30���������������Ÿ���
+        });
+
+        var shape = ps.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 1.5f;            // ԭ�� 0.5����㷶Χ����
+
+        var sol = ps.sizeOverLifetime;
+        sol.enabled = true;
+        sol.size = new ParticleSystem.MinMaxCurve(1f, new AnimationCurve(
+            new Keyframe(0f, 1f),
+            new Keyframe(1f, 0f)
+        ));
+
+        // ��Ⱦ
+        var renderer = ps.GetComponent<ParticleSystemRenderer>();
+        renderer.renderMode = ParticleSystemRenderMode.Mesh;
+
+        // ���Ż�����̬���� Sphere mesh��ֻ CreatePrimitive һ��
+        renderer.mesh = GetCachedSphereMesh();
+
+        // ���Ż���������ʣ�ֻ new һ��
+        // ע�⣺�� sharedMaterial ������ material�����߻Ḵ��һ�ݲ���
+        renderer.sharedMaterial = GetCachedMaterial();
+
+        renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+
+        ps.Play();
+        Destroy(gameObject, 2f);
+    }
+
+    // ���Ż������� Sphere mesh
+    private static Mesh GetCachedSphereMesh()
+    {
+        if (_cachedSphereMesh != null) return _cachedSphereMesh;
+
+        GameObject temp = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        _cachedSphereMesh = temp.GetComponent<MeshFilter>().sharedMesh;
+        Destroy(temp);
+        return _cachedSphereMesh;
+    }
+
+    // ���Ż���������ʣ�Shader.Find Ҳֻ�ڵ�һ��ִ��
+    private static Material GetCachedMaterial()
+    {
+        if (_cachedMaterial != null) return _cachedMaterial;
+
+        // �� URP �� Unlit������ Mesh ģʽ
+        Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+        if (shader == null) shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+        if (shader == null) shader = Shader.Find("Sprites/Default");
+
+        Material mat = new Material(shader);
+        Color c = new Color(0.55f, 0.4f, 0.25f, 1f);
+        mat.SetColor("_BaseColor", c);
+        mat.SetColor("_Color", c);
+
+        // ���͸��
+        mat.SetFloat("_Surface", 1);
+        mat.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        mat.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+        mat.SetFloat("_ZWrite", 0);
+        mat.renderQueue = 3000;
+        mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+
+        _cachedMaterial = mat;
+        return _cachedMaterial;
+    }
+}
+
+=======================================
+// Assets/Scripts/Towers/Bullet.cs
+=======================================
+using UnityEngine;
+using System.Collections.Generic;
+
+public class Bullet : MonoBehaviour
+{
+    public float speed = 40f;
+    public int damage = 5;
+    public float lifeTime = 3f;
+    public float missLifeTime = 0.4f;
+
+    private float _slowMultiplier = 1f;
+    private float _slowDuration = 0f;
+    private float _explosionRadius = 0f;
+    private bool _visualOnly = false;
+
+    private Transform _target;
+    private Enemy _targetEnemy;
+    private Vector3 _lastDirection = Vector3.forward;
+    private float _missTimer = 0f;
+    private bool _isMissing = false;
+
+    // ������ء��������ڼ�ʱ
+    private float _lifeTimer = 0f;
+
+    // ������ء���̬����Ԥ�����¼
+    private static Queue<Bullet> _pool = new Queue<Bullet>();
+    private static Bullet _prefab;
+
+    public static Bullet Spawn(Vector3 position)
+    {
+        Bullet b;
+        if (_pool.Count > 0)
+        {
+            b = _pool.Dequeue();
+            b.transform.position = position;
+            b.transform.rotation = Quaternion.identity;
+            b.gameObject.SetActive(true);
+        }
+        else
+        {
+            // ����ǵ�һ�Σ�ͨ�� Tower ������ Prefab ʵ��������ʵ�����ⲿ�� Instantiate�������ø�ȡ�ɷ������˵����
+            // Ϊ�˲��� Tower ̫�࣬���Ǽ�һ�� InitPrefab ����
+            return null;
+        }
+        return b;
+    }
+
+    // �� Tower �״�����ʱ��¼ Prefab
+    public static void SetPrefab(Bullet prefab)
+    {
+        if (_prefab == null) _prefab = prefab;
+    }
+
+    public static Bullet SpawnFromPool(Bullet prefab, Vector3 position)
+    {
+        SetPrefab(prefab);
+
+        Bullet b;
+        if (_pool.Count > 0)
+        {
+            b = _pool.Dequeue();
+            b.transform.position = position;
+            b.transform.rotation = Quaternion.identity;
+            b.gameObject.SetActive(true);
+        }
+        else
+        {
+            b = Instantiate(prefab, position, Quaternion.identity);
+        }
+        return b;
+    }
+
+    public void SetTarget(Transform target, int dmg, float slowMul, float slowDur, float explosionRadius = 0f, bool visualOnly = false)
+    {
+        _target = target;
+        _targetEnemy = target != null ? target.GetComponentInParent<Enemy>() : null;
+        damage = dmg;
+        _slowMultiplier = slowMul;
+        _slowDuration = slowDur;
+        _explosionRadius = explosionRadius;
+        _visualOnly = visualOnly;
+
+        // ������ء�����״̬
+        _isMissing = false;
+        _missTimer = 0f;
+        _lifeTimer = lifeTime; // ���ԭ���� Destroy(gameObject, lifeTime)
+    }
+
+    void Update()
+    {
+        // ������ء��������ڵ���ʱ
+        _lifeTimer -= Time.deltaTime;
+        if (_lifeTimer <= 0f)
+        {
+            Despawn();
+            return;
+        }
+
+        if (_targetEnemy != null && _targetEnemy.IsDead)
+        {
+            _target = null;
+            _targetEnemy = null;
+        }
+
+        if (_target == null && !_isMissing)
+        {
+            _isMissing = true;
+            _missTimer = missLifeTime;
+        }
+
+        if (!_isMissing)
+        {
+            Vector3 dir = _target.position - transform.position;
+            _lastDirection = dir.normalized;
+
+            float step = speed * Time.deltaTime;
+            if (dir.magnitude <= step)
+            {
+                OnHit();
+                return;
+            }
+
+            transform.rotation = Quaternion.LookRotation(_lastDirection);
+            transform.position += _lastDirection * step;
+        }
+        else
+        {
+            _missTimer -= Time.deltaTime;
+            if (_missTimer <= 0f) { Despawn(); return; }
+            if (_lastDirection.sqrMagnitude > 0.001f)
+                transform.rotation = Quaternion.LookRotation(_lastDirection);
+            transform.position += _lastDirection * speed * Time.deltaTime;
+        }
+    }
+
+    private void OnHit()
+    {
+        Vector3 hitPos = transform.position;
+
+        if (!_visualOnly)
+        {
+            if (_explosionRadius > 0f)
+            {
+                Explode(hitPos);
+            }
+            else
+            {
+                if (_targetEnemy != null) ApplyDamage(_targetEnemy);
+            }
+        }
+        else if (_explosionRadius > 0f)
+        {
+            ExplosionEffect.Spawn(hitPos, _explosionRadius);
+        }
+
+        Despawn();
+    }
+
+    private void Explode(Vector3 center)
+    {
+        if (EnemyManager.Instance == null) return;
+
+        var all = EnemyManager.Instance.GetAllEnemies();
+        // ���޸������õ��� for����ֹ�������˴��� Unregister ���� foreach ����
+        for (int i = all.Count - 1; i >= 0; i--)
+        {
+            var e = all[i];
+            if (e == null || e.IsDead) continue;
+            float dist = Vector3.Distance(
+                new Vector3(e.transform.position.x, 0, e.transform.position.z),
+                new Vector3(center.x, 0, center.z));
+            if (dist <= _explosionRadius) ApplyDamage(e);
+        }
+        ExplosionEffect.Spawn(center, _explosionRadius);
+    }
+
+    private void ApplyDamage(Enemy e)
+    {
+        e.TakeDamage(damage);
+        if (_slowMultiplier < 1f && _slowDuration > 0f)
+            e.ApplySlow(_slowMultiplier, _slowDuration);
+    }
+
+    // ������ء�����
+    private void Despawn()
+    {
+        gameObject.SetActive(false);
+        _pool.Enqueue(this);
+    }
+}
+
+=======================================
+// Assets/Scripts/Towers/ExplosionEffect.cs
+=======================================
+using UnityEngine;
+
+[RequireComponent(typeof(LineRenderer))]
+public class ExplosionEffect : MonoBehaviour
+{
+    public float lifeTime = 0.4f;
+    public float mainWidth = 1.5f;
+    public Color color = new Color(1f, 0.5f, 0.1f, 1f);   // ��
+
+    private float _maxRadius;
+    private float _currentRadius;
+    private float _elapsed;
+    private LineRenderer _lr;
+    private const int SEGMENTS = 48;
+
+    public static void Spawn(Vector3 pos, float radius)
+    {
+        GameObject obj = new GameObject("Explosion");
+        obj.transform.position = new Vector3(pos.x, 0.4f, pos.z);
+        ExplosionEffect fx = obj.AddComponent<ExplosionEffect>();
+        fx.Init(radius);
+    }
+
+    public void Init(float radius)
+    {
+        _maxRadius = radius;
+    }
+
+    void Start()
+    {
+        _lr = GetComponent<LineRenderer>();
+        _lr.useWorldSpace = true;
+        _lr.loop = true;
+        _lr.positionCount = SEGMENTS;
+        _lr.widthMultiplier = mainWidth;
+        _lr.numCapVertices = 2;
+
+        Shader shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+        if (shader == null) shader = Shader.Find("Sprites/Default");
+        _lr.material = new Material(shader);
+
+        _lr.startColor = color;
+        _lr.endColor = color;
+        _lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        _lr.receiveShadows = false;
+
+        UpdateCircle(0.1f);
+    }
+
+    void Update()
+    {
+        _elapsed += Time.deltaTime;
+        float t = _elapsed / lifeTime;
+        if (t >= 1f) { Destroy(gameObject); return; }
+
+        _currentRadius = Mathf.Lerp(0.1f, _maxRadius, t);
+
+        // ǰ�α��֣���ε���
+        float alpha = t < 0.4f ? 1f : Mathf.Lerp(1f, 0f, (t - 0.4f) / 0.6f);
+
+        Color c = color; c.a = alpha;
+        _lr.startColor = c; _lr.endColor = c;
+        _lr.widthMultiplier = Mathf.Lerp(mainWidth, 0.2f, t);
+
+        UpdateCircle(_currentRadius);
+    }
+
+    private void UpdateCircle(float r)
+    {
+        Vector3 center = transform.position;
+        for (int i = 0; i < SEGMENTS; i++)
+        {
+            float angle = i * Mathf.PI * 2f / SEGMENTS;
+            Vector3 p = center + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * r;
+            _lr.SetPosition(i, p);
+        }
+    }
+}
+
+=======================================
+// Assets/Scripts/Towers/MortarShell.cs
+=======================================
+using UnityEngine;
+using System.Collections.Generic; // 👈 加上这一行
+
+public class MortarShell : MonoBehaviour
+{
+    [Header("抛物线参数")]
+    public float flightTime = 1.4f;
+    public float arcHeight = 14f;
+
+    private Vector3 _start;
+    private Vector3 _end;
+    private float _elapsed;
+    private bool _launched = false;
+
+    private int _damage = 5;
+    private float _explosionRadius = 4f;
+    private float _slowMultiplier = 1f;
+    private float _slowDuration = 0f;
+    private float _stunDuration = 0f;
+    private bool _visualOnly = false;
+
+    // 【对象池】静态池
+    private static Queue<MortarShell> _pool = new Queue<MortarShell>();
+
+    public static MortarShell SpawnFromPool(MortarShell prefab, Vector3 position)
+    {
+        MortarShell m;
+        if (_pool.Count > 0)
+        {
+            m = _pool.Dequeue();
+            m.transform.position = position;
+            m.transform.rotation = Quaternion.identity;
+            m.gameObject.SetActive(true);
+        }
+        else
+        {
+            m = Instantiate(prefab, position, Quaternion.identity);
+        }
+        return m;
+    }
+
+    public void Launch(Vector3 start, Vector3 end, int damage, float radius,
+                        float slowMul, float slowDur, float stunDur, bool visualOnly = false)
+    {
+        _start = start;
+        _end = new Vector3(end.x, 0.3f, end.z);
+        _damage = damage;
+        _explosionRadius = radius;
+        _slowMultiplier = slowMul;
+        _slowDuration = slowDur;
+        _stunDuration = stunDur;
+        _visualOnly = visualOnly;
+        _elapsed = 0f;
+        _launched = true;
+        transform.position = start;
+    }
+
+    void Update()
+    {
+        if (!_launched) return;
+
+        _elapsed += Time.deltaTime;
+        float t = Mathf.Clamp01(_elapsed / flightTime);
+
+        Vector3 pos = Vector3.Lerp(_start, _end, t);
+        pos.y += arcHeight * 4f * t * (1f - t);
+        transform.position = pos;
+
+        Vector3 tangent;
+        tangent.x = _end.x - _start.x;
+        tangent.z = _end.z - _start.z;
+        tangent.y = (_end.y - _start.y) + arcHeight * 4f * (1f - 2f * t);
+
+        if (tangent.sqrMagnitude > 0.0001f)
+            transform.rotation = Quaternion.LookRotation(tangent.normalized);
+
+        if (t >= 1f)
+        {
+            Explode();
+        }
+    }
+
+    private void Explode()
+    {
+        SoundManager.Instance?.Play("爆炸");
+
+        if (!_visualOnly)
+        {
+            var all = EnemyManager.Instance != null ? EnemyManager.Instance.GetAllEnemies() : null;
+            if (all != null)
+            {
+                // 【修复】用倒序 for
+                for (int i = all.Count - 1; i >= 0; i--)
+                {
+                    var e = all[i];
+                    if (e == null || e.IsDead) continue;
+                    float dist = Vector3.Distance(
+                        new Vector3(e.transform.position.x, 0, e.transform.position.z),
+                        new Vector3(transform.position.x, 0, transform.position.z));
+                    if (dist <= _explosionRadius)
+                    {
+                        e.TakeDamage(_damage);
+                        if (_slowMultiplier < 1f && _slowDuration > 0f) e.ApplySlow(_slowMultiplier, _slowDuration);
+                        if (_stunDuration > 0f) e.ApplyStun(_stunDuration);
+                    }
+                }
+            }
+        }
+
+        ExplosionEffect.Spawn(transform.position, _explosionRadius);
+        if (CameraShake.Instance != null) CameraShake.Instance.Shake(0.6f, 0.2f);
+
+        // 【对象池】回收
+        Despawn();
+    }
+
+    private void Despawn()
+    {
+        _launched = false;
+        gameObject.SetActive(false);
+        _pool.Enqueue(this);
+    }
+}
+
+=======================================
+// Assets/Scripts/Towers/SlowPulse.cs
+=======================================
+using UnityEngine;
+using System.Collections.Generic;
+
+[RequireComponent(typeof(LineRenderer))]
+public class SlowPulse : MonoBehaviour
+{
+    [Header("Բ�����")]
+    public float mainWidth = 1.4f;
+    public float innerWidthScale = 0.45f;
+
+    [Header("Բ���߶�")]
+    public float ringHeight = 0.4f;
+
+    [Header("����ʱ��")]
+    public float lifeTime = 1.8f;
+
+    [Header("��������")]
+    [Range(0f, 1f)] public float holdRatio = 0.6f;
+
+    private float _maxRadius = 8f;
+    private int _damage = 2;
+    private float _slowMul = 0.5f;
+    private float _slowDur = 2f;
+    private Color _pulseColor = new Color(0.3f, 0.8f, 1f, 1f);
+    private float _stunDuration = 0f;
+    private bool _isVisualOnly = false;
+
+    private float _expandSpeed;
+    private float _currentRadius = 0f;
+    private bool _playedHitSound = false;
+
+    private LineRenderer _lr;
+    private LineRenderer _lrInner;
+
+    private HashSet<Enemy> _hit = new HashSet<Enemy>();
+    private const int SEGMENTS = 64;
+
+    private Color _innerColorCache;
+    private Material _pulseMat;
+
+    public void Init(float range, int damage, float slowMul, float slowDur, Color color, float stunDur)
+    {
+        _maxRadius = range;
+        _damage = damage;
+        _slowMul = slowMul;
+        _slowDur = slowDur;
+        _pulseColor = color;
+        _stunDuration = stunDur;
+        _expandSpeed = range / lifeTime;
+        _isVisualOnly = damage <= 0;
+        _innerColorCache = Color.Lerp(_pulseColor, Color.white, 0.35f);
+    }
+
+    void Start()
+    {
+        _pulseMat = CreatePulseMaterial();
+
+        _lr = GetComponent<LineRenderer>();
+        SetupLineRenderer(_lr, mainWidth, _pulseColor);
+
+        GameObject innerObj = new GameObject("InnerRing");
+        innerObj.transform.SetParent(transform);
+        innerObj.transform.localPosition = Vector3.zero;
+        _lrInner = innerObj.AddComponent<LineRenderer>();
+        SetupLineRenderer(_lrInner, mainWidth * innerWidthScale, _innerColorCache);
+
+        UpdateCircle();
+    }
+
+    private Material CreatePulseMaterial()
+    {
+        Shader shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+        if (shader == null) shader = Shader.Find("Sprites/Default");
+
+        Material mat = new Material(shader);
+        mat.SetColor("_BaseColor", Color.white);
+        mat.SetColor("_Color", Color.white);
+
+        mat.SetFloat("_Surface", 1f);
+        mat.SetFloat("_Blend", 2f);
+        mat.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        mat.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.One);
+        mat.SetFloat("_ZWrite", 0f);
+        mat.renderQueue = 3000;
+        mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+
+        return mat;
+    }
+
+    private void SetupLineRenderer(LineRenderer lr, float width, Color color)
+    {
+        lr.useWorldSpace = true;
+        lr.loop = true;
+        lr.positionCount = SEGMENTS;
+        lr.widthMultiplier = width;
+        lr.numCapVertices = 2;
+        lr.material = _pulseMat;
+        lr.startColor = color;
+        lr.endColor = color;
+        lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        lr.receiveShadows = false;
+    }
+
+    void Update()
+    {
+        _currentRadius += _expandSpeed * Time.deltaTime;
+
+        HitCheck();
+
+        if (_currentRadius >= _maxRadius)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        UpdateCircle();
+
+        float t = _currentRadius / _maxRadius;
+        float alpha;
+        if (t < holdRatio) alpha = 1f;
+        else alpha = Mathf.Lerp(1f, 0f, (t - holdRatio) / (1f - holdRatio));
+
+        Color c = _pulseColor; c.a = alpha;
+        _lr.startColor = c; _lr.endColor = c;
+        _lr.widthMultiplier = Mathf.Lerp(mainWidth, mainWidth * 0.5f, t);
+
+        Color ic = _innerColorCache; ic.a = alpha * 0.7f;
+        _lrInner.startColor = ic; _lrInner.endColor = ic;
+        _lrInner.widthMultiplier = Mathf.Lerp(mainWidth * innerWidthScale, mainWidth * innerWidthScale * 0.4f, t);
+    }
+
+    private void UpdateCircle()
+    {
+        Vector3 center = transform.position;
+        center.y = ringHeight;
+
+        for (int i = 0; i < SEGMENTS; i++)
+        {
+            float angle = i * Mathf.PI * 2f / SEGMENTS;
+            Vector3 p = center + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * _currentRadius;
+            _lr.SetPosition(i, p);
+        }
+
+        float innerRadius = _currentRadius * 0.75f;
+        for (int i = 0; i < SEGMENTS; i++)
+        {
+            float angle = i * Mathf.PI * 2f / SEGMENTS;
+            Vector3 p = center + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * innerRadius;
+            _lrInner.SetPosition(i, p);
+        }
+    }
+
+    private void HitCheck()
+    {
+        if (EnemyManager.Instance == null) return;
+
+        var all = EnemyManager.Instance.GetAllEnemies();
+
+        // ���޸����� foreach ��Ϊ���� for ѭ��
+        // ԭ��e.TakeDamage() ���ܵ��µ����������� all �б����Ƴ�Ԫ�أ�
+        // ���ʹ�� foreach �������޸ļ��ϣ����׳� InvalidOperationException ���¿�����
+        for (int i = all.Count - 1; i >= 0; i--)
+        {
+            var e = all[i];
+            if (e == null || _hit.Contains(e)) continue;
+
+            float dist = Vector3.Distance(
+                new Vector3(e.transform.position.x, 0, e.transform.position.z),
+                new Vector3(transform.position.x, 0, transform.position.z)
+            );
+
+            if (dist <= _currentRadius)
+            {
+                _hit.Add(e);
+
+                if (!_playedHitSound)
+                {
+                    SoundManager.Instance?.Play("������������");
+                    _playedHitSound = true;
+                }
+
+                if (!_isVisualOnly)
+                {
+                    // ����ᴥ�� TakeDamage -> Die -> Despawn -> Unregister
+                    // ����ѭ�����Ա�֤��ʹ��ǰԪ�ر��Ƴ���Ҳ����Ӱ��ǰ���Ԫ������
+                    e.TakeDamage(_damage);
+                    e.ApplySlow(_slowMul, _slowDur);
+
+                    if (_stunDuration > 0f)
+                        e.ApplyStun(_stunDuration);
+                }
+            }
+        }
+    }
+}
+
+=======================================
+// Assets/Scripts/Towers/Tower.cs
+=======================================
+using UnityEngine;
+using UnityEngine.UI;
+using Unity.Netcode;
+
+public class Tower : NetworkBehaviour
+{
+    public TowerData data;
+
+    [Header("������������")]
+    public NetworkVariable<int> dataIndex = new NetworkVariable<int>(
+        -1, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    [Header("��ǰ�ȼ�")]
+    public NetworkVariable<int> currentLevel = new NetworkVariable<int>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    [Header("��������Server �㲥���ͻ��ˣ�")]
+    public NetworkVariable<float> turretYawNV = new NetworkVariable<float>(
+        0f, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    [Header("�����")]
+    public Transform firePoint;
+
+    private float buildTimer = 0f;
+    private bool isBuilt = false;
+    private Slider progressSlider;
+    private Vector3 _originalScale;
+
+    private Enemy _currentTarget;
+    private float _cooldown = 0f;
+
+    private bool _isAiming = false;
+    private float _aimTimer = 0f;
+    private LineRenderer _aimLine;
+
+    private float _lastSentYaw = 0f;
+
+    private static Material _aimLineSharedMaterial;
+
+    public int CurrentLevel => currentLevel.Value;
+    public bool IsBuilt => isBuilt;
+    public TowerData Data => data;
+    private TowerLevelStats Stats => data != null ? data.GetStats(CurrentLevel) : null;
+
+    public float GetCurrentRange()
+    {
+        var stats = Stats;
+        return stats != null ? stats.range : 0f;
+    }
+
+    public override void OnNetworkSpawn()
+    {
+        dataIndex.OnValueChanged += HandleDataIndexChanged;
+        turretYawNV.OnValueChanged += HandleYawChanged;
+
+        TryResolveDataFromIndex(dataIndex.Value);
+
+        if (BuildManager.Instance != null)
+        {
+            Vector2Int key = BuildManager.Instance.WorldToGrid(transform.position);
+            BuildManager.Instance.RegisterTower(key, this);
+        }
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        dataIndex.OnValueChanged -= HandleDataIndexChanged;
+        turretYawNV.OnValueChanged -= HandleYawChanged;
+    }
+
+    private void HandleDataIndexChanged(int oldV, int newV)
+    {
+        TryResolveDataFromIndex(newV);
+    }
+
+    private void TryResolveDataFromIndex(int idx)
+    {
+        if (idx < 0) return;
+        if (BuildManager.Instance == null) return;
+        var datas = BuildManager.Instance.towerDatas;
+        if (datas == null || idx >= datas.Length)
+        {
+            Debug.LogWarning($"[Tower] dataIndex {idx} Խ�磨���鳤�� {(datas == null ? 0 : datas.Length)}�����Ѻ���");
+            return;
+        }
+        data = datas[idx];
+    }
+
+    private void HandleYawChanged(float oldV, float newV)
+    {
+        if (!IsServer)
+            transform.rotation = Quaternion.Euler(0, newV, 0);
+    }
+
+    void Start()
+    {
+        progressSlider = GetComponentInChildren<Slider>();
+        if (progressSlider != null) progressSlider.value = 0f;
+
+        _originalScale = transform.localScale;
+        transform.localScale = Vector3.zero;
+    }
+
+    private Vector3 GetFirePosition()
+    {
+        if (firePoint != null) return firePoint.position;
+        return transform.position + Vector3.up * 1.5f;
+    }
+
+    void Update()
+    {
+        if (!isBuilt)
+        {
+            buildTimer += Time.deltaTime;
+            float progress = Mathf.Clamp01(buildTimer / data.buildTime);
+            transform.localScale = Vector3.Lerp(Vector3.zero, _originalScale, progress);
+            if (progressSlider != null) progressSlider.value = progress;
+            if (progress >= 1f) FinishBuild();
+            return;
+        }
+
+        if (IsSpawned && !IsServer) return;
+
+        UpdateAttack();
+    }
+
+    private void FinishBuild()
+    {
+        isBuilt = true;
+        transform.localScale = _originalScale;
+        if (progressSlider != null) progressSlider.gameObject.SetActive(false);
+        BuildDustParticles.Spawn(transform.position);
+        if (BuildManager.Instance != null) BuildManager.Instance.OnTowerBuilt();
+        SoundManager.Instance?.Play("�������");
+    }
+
+    private void UpdateAttack()
+    {
+        var stats = Stats;
+        if (stats == null) return;
+
+        if (LockOnManager.Instance != null)
+        {
+            var locked = LockOnManager.Instance.LockedEnemy;
+            if (locked != null && locked != _currentTarget && IsInRange(locked))
+            {
+                _currentTarget = locked;
+                _cooldown = 0f;
+                if (_isAiming) CancelAim();
+            }
+        }
+
+        if (_isAiming)
+        {
+            if (_currentTarget == null)
+            {
+                CancelAim();
+                _cooldown = 0f;
+                return;
+            }
+
+            RotateTurretTo(_currentTarget);
+            _aimTimer -= Time.deltaTime;
+            UpdateAimLine();
+
+            if (_aimTimer <= 0f)
+            {
+                Fire();
+                _cooldown = Mathf.Max(0.05f, stats.attackInterval - data.aimLineDuration);
+                EndAim();
+            }
+            return;
+        }
+
+        _cooldown -= Time.deltaTime;
+        if (_cooldown > 0f) return;
+
+        if (data.attackType == TowerAttackType.Pulse)
+        {
+            Fire();
+            _cooldown = stats.attackInterval;
+            return;
+        }
+
+        if (_currentTarget == null || !IsInRange(_currentTarget))
+            _currentTarget = FindTarget(stats.range);
+
+        if (_currentTarget == null) return;
+
+        RotateTurretTo(_currentTarget);
+
+        if (data.useAimLine && data.aimLineDuration > 0f)
+            StartAim();
+        else
+        {
+            Fire();
+            _cooldown = stats.attackInterval;
+        }
+    }
+
+    public int GetTotalInvested()
+    {
+        if (data == null) return 0;
+        int total = data.cost;
+        for (int i = 1; i <= CurrentLevel; i++)
+        {
+            var stats = data.GetStats(i);
+            if (stats != null) total += stats.upgradeCost;
+        }
+        return total;
+    }
+
+    public void RequestSell()
+    {
+        if (IsServer) DoSell();
+        else SellServerRpc();
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void SellServerRpc() { DoSell(); }
+
+    private void DoSell()
+    {
+        if (!IsServer) return;
+
+        int total = GetTotalInvested();
+        int refund = Mathf.RoundToInt(total * 0.7f);
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.AddGold(refund);
+
+        if (BuildManager.Instance != null)
+        {
+            Vector2Int key = BuildManager.Instance.WorldToGrid(transform.position);
+            BuildManager.Instance.UnregisterTower(key);
+        }
+
+        if (NetworkObject != null && NetworkObject.IsSpawned)
+            NetworkObject.Despawn(true);
+
+        PlaySoundClientRpc("����");
+    }
+
+    private void RotateTurretTo(Enemy target)
+    {
+        if (target == null) return;
+        Vector3 dir = target.transform.position - transform.position;
+        dir.y = 0f;
+        if (dir.sqrMagnitude < 0.0001f) return;
+
+        Quaternion targetRot = Quaternion.LookRotation(dir);
+        transform.rotation = targetRot;
+
+        float yaw = targetRot.eulerAngles.y;
+        if (Mathf.Abs(Mathf.DeltaAngle(_lastSentYaw, yaw)) > 2f)
+        {
+            _lastSentYaw = yaw;
+            if (IsServer) turretYawNV.Value = yaw;
+        }
+    }
+
+    private Enemy FindTarget(float range)
+    {
+        if (LockOnManager.Instance != null)
+        {
+            var locked = LockOnManager.Instance.LockedEnemy;
+            if (locked != null && !locked.IsDead && IsInRange(locked))
+                return locked;
+        }
+
+        if (EnemyManager.Instance == null) return null;
+        return data.targetPriority == TargetPriority.Farthest
+            ? EnemyManager.Instance.FindFarthestInRange(transform.position, range)
+            : EnemyManager.Instance.FindNearestInRange(transform.position, range);
+    }
+
+    private bool IsInRange(Enemy e)
+    {
+        if (e == null) return false;
+        var stats = Stats;
+        if (stats == null) return false;
+        return (e.transform.position - transform.position).sqrMagnitude <= stats.range * stats.range;
+    }
+
+    private void Fire()
+    {
+        if (data.attackType == TowerAttackType.Projectile) FireProjectile();
+        else if (data.attackType == TowerAttackType.Pulse) FirePulse();
+    }
+
+    private void FireProjectile()
+    {
+        if (data.bulletPrefab == null) return;
+        var stats = Stats;
+        if (stats == null) return;
+        if (_currentTarget == null) return;
+
+        Vector3 spawnPos = GetFirePosition();
+        Vector3 targetPos = _currentTarget.transform.position;
+
+        if (data.projectileMode == ProjectileMode.Mortar)
+        {
+            SoundManager.Instance?.Play("Ⱥ��������");
+            SpawnMortarLocal(spawnPos, targetPos, stats, true);
+            SpawnMortarClientRpc(spawnPos, targetPos, dataIndex.Value, CurrentLevel);
+        }
+        else
+        {
+            if (data.useAimLine)
+                SoundManager.Instance?.Play("�ѻ�������");
+            else
+                SoundManager.Instance?.Play("��ǹ������");
+
+            SpawnBulletLocal(spawnPos, _currentTarget.transform, stats, true);
+            SpawnBulletClientRpc(spawnPos, _currentTarget.NetworkObjectId, dataIndex.Value, CurrentLevel);
+
+            if (data.useAimLine && CameraShake.Instance != null)
+                CameraShake.Instance.Shake(0.15f, 0.1f);
+        }
+    }
+
+    private void SpawnBulletLocal(Vector3 spawnPos, Transform target, TowerLevelStats stats, bool dealDamage)
+    {
+        // ������ء��滻 Instantiate
+        Bullet bulletPrefabComp = data.bulletPrefab.GetComponent<Bullet>();
+        Bullet bullet = Bullet.SpawnFromPool(bulletPrefabComp, spawnPos);
+
+        if (bullet != null)
+            bullet.SetTarget(target, stats.damage, stats.slowMultiplier, stats.slowDuration, stats.explosionRadius, !dealDamage);
+    }
+
+    private void SpawnMortarLocal(Vector3 spawnPos, Vector3 targetPos, TowerLevelStats stats, bool dealDamage)
+    {
+        // ������ء��滻 Instantiate
+        MortarShell mortarPrefabComp = data.bulletPrefab.GetComponent<MortarShell>();
+        MortarShell shell = MortarShell.SpawnFromPool(mortarPrefabComp, spawnPos);
+
+        if (shell != null)
+            shell.Launch(spawnPos, targetPos, stats.damage, stats.explosionRadius,
+                stats.slowMultiplier, stats.slowDuration, stats.stunDuration, !dealDamage);
+    }
+
+    [ClientRpc]
+    private void SpawnBulletClientRpc(Vector3 spawnPos, ulong targetNetObjId, int idx, int level)
+    {
+        if (IsServer) return;
+        if (BuildManager.Instance == null) return;
+        var datas = BuildManager.Instance.towerDatas;
+        if (datas == null || idx < 0 || idx >= datas.Length) return;
+        var towerData = datas[idx];
+        if (towerData == null) return;
+
+        var stats = towerData.GetStats(level);
+        if (stats == null) return;
+
+        if (towerData.useAimLine)
+            SoundManager.Instance?.Play("�ѻ�������");
+        else
+            SoundManager.Instance?.Play("��ǹ������");
+
+        Transform target = null;
+        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(targetNetObjId, out var netObj))
+            target = netObj.transform;
+
+        if (target == null) return;
+
+        // ������ء��滻 Instantiate
+        Bullet bulletPrefabComp = towerData.bulletPrefab.GetComponent<Bullet>();
+        Bullet bullet = Bullet.SpawnFromPool(bulletPrefabComp, spawnPos);
+
+        if (bullet != null)
+            bullet.SetTarget(target, stats.damage, stats.slowMultiplier, stats.slowDuration, stats.explosionRadius, true);
+    }
+
+    [ClientRpc]
+    private void SpawnMortarClientRpc(Vector3 spawnPos, Vector3 targetPos, int idx, int level)
+    {
+        if (IsServer) return;
+        if (BuildManager.Instance == null) return;
+        var datas = BuildManager.Instance.towerDatas;
+        if (datas == null || idx < 0 || idx >= datas.Length) return;
+        var towerData = datas[idx];
+        if (towerData == null) return;
+
+        var stats = towerData.GetStats(level);
+        if (stats == null) return;
+
+        SoundManager.Instance?.Play("Ⱥ��������");
+
+        // ������ء��滻 Instantiate
+        MortarShell mortarPrefabComp = towerData.bulletPrefab.GetComponent<MortarShell>();
+        MortarShell shell = MortarShell.SpawnFromPool(mortarPrefabComp, spawnPos);
+
+        if (shell != null)
+            shell.Launch(spawnPos, targetPos, stats.damage, stats.explosionRadius,
+                stats.slowMultiplier, stats.slowDuration, stats.stunDuration, true);
+    }
+
+    private void FirePulse()
+    {
+        var stats = Stats;
+        if (stats == null) return;
+
+        SoundManager.Instance?.Play("����������");
+
+        var ps = GetComponentInChildren<ParticleSystem>();
+        if (ps != null) ps.Play();
+
+        SpawnPulseLocal(stats, false);
+        SpawnPulseClientRpc(dataIndex.Value, CurrentLevel);
+    }
+
+    private void SpawnPulseLocal(TowerLevelStats stats, bool isVisualOnly)
+    {
+        // �������岻�Ǹ�Ƶ���ɣ�1.8�������һ�Σ�����ʱ���� new GameObject
+        GameObject obj = new GameObject("SlowPulse");
+        obj.transform.SetParent(transform);
+        obj.transform.localPosition = Vector3.zero;
+
+        SlowPulse pulse = obj.AddComponent<SlowPulse>();
+        pulse.Init(
+            stats.range, isVisualOnly ? 0 : stats.damage,
+            stats.slowMultiplier, stats.slowDuration,
+            stats.pulseColor, stats.stunDuration
+        );
+    }
+
+    [ClientRpc]
+    private void SpawnPulseClientRpc(int idx, int level)
+    {
+        if (IsServer) return;
+        if (BuildManager.Instance == null) return;
+        var datas = BuildManager.Instance.towerDatas;
+        if (datas == null || idx < 0 || idx >= datas.Length) return;
+        var towerData = datas[idx];
+        if (towerData == null) return;
+
+        var stats = towerData.GetStats(level);
+        if (stats == null) return;
+
+        SoundManager.Instance?.Play("����������");
+
+        SpawnPulseLocal(stats, true);
+
+        var ps = GetComponentInChildren<ParticleSystem>();
+        if (ps != null) ps.Play();
+    }
+
+    [ClientRpc]
+    private void PlaySoundClientRpc(string soundName)
+    {
+        SoundManager.Instance?.Play(soundName);
+    }
+
+    private void EnsureAimLine()
+    {
+        if (_aimLine != null) return;
+
+        GameObject obj = new GameObject("AimLine");
+        obj.transform.SetParent(transform);
+        obj.transform.localPosition = Vector3.zero;
+
+        _aimLine = obj.AddComponent<LineRenderer>();
+        _aimLine.useWorldSpace = true;
+        _aimLine.positionCount = 2;
+        _aimLine.widthMultiplier = data.aimLineWidth;
+        _aimLine.numCapVertices = 2;
+        _aimLine.material = GetSharedAimLineMaterial();
+        _aimLine.startColor = data.aimLineColor;
+        _aimLine.endColor = data.aimLineColor;
+        _aimLine.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        _aimLine.receiveShadows = false;
+        _aimLine.enabled = false;
+    }
+
+    private static Material GetSharedAimLineMaterial()
+    {
+        if (_aimLineSharedMaterial == null)
+        {
+            var shader = Shader.Find("Sprites/Default");
+            if (shader != null)
+                _aimLineSharedMaterial = new Material(shader);
+        }
+        return _aimLineSharedMaterial;
+    }
+
+    private void StartAim()
+    {
+        _isAiming = true;
+        _aimTimer = data.aimLineDuration;
+        EnsureAimLine();
+        _aimLine.widthMultiplier = data.aimLineWidth;
+        _aimLine.startColor = data.aimLineColor;
+        _aimLine.endColor = data.aimLineColor;
+        _aimLine.enabled = true;
+        UpdateAimLine();
+        SoundManager.Instance?.Play("�ѻ���׼");
+    }
+
+    private void UpdateAimLine()
+    {
+        if (_aimLine == null) return;
+        if (_currentTarget == null) return;
+        Vector3 start = GetFirePosition();
+        Vector3 end = _currentTarget.transform.position + Vector3.up * 1f;
+        _aimLine.SetPosition(0, start);
+        _aimLine.SetPosition(1, end);
+    }
+
+    private void EndAim() { _isAiming = false; if (_aimLine != null) _aimLine.enabled = false; }
+    private void CancelAim() { _isAiming = false; if (_aimLine != null) _aimLine.enabled = false; }
+
+    public void SetData(TowerData towerData) { data = towerData; }
+
+    public bool TryUpgrade()
+    {
+        if (data == null) return false;
+        int nextLevel = CurrentLevel + 1;
+        if (nextLevel >= data.MaxLevel)
+        {
+            Debug.Log("������ߵȼ�");
+            return false;
+        }
+
+        if (!IsServer) { UpgradeServerRpc(); return true; }
+        return DoUpgrade();
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void UpgradeServerRpc() { DoUpgrade(); }
+
+    private bool DoUpgrade()
+    {
+        int nextLevel = CurrentLevel + 1;
+        if (nextLevel >= data.MaxLevel) return false;
+
+        var nextStats = data.GetStats(nextLevel);
+        if (nextStats == null) return false;
+        if (GameManager.Instance == null) return false;
+
+        if (!GameManager.Instance.SpendGold(nextStats.upgradeCost))
+        {
+            Debug.Log("��Ҳ��㣬�޷�����");
+            return false;
+        }
+
+        currentLevel.Value = nextLevel;
+        Debug.Log($"{data.towerName} ������ Lv{nextLevel + 1}");
+        PlaySoundClientRpc("������");
+        return true;
+    }
+}
+
+=======================================
+// Assets/Scripts/Towers/TowerData.cs
+=======================================
+using UnityEngine;
+
+public enum TowerAttackType { Projectile, Pulse }
+public enum ProjectileMode { Straight, Mortar }
+public enum TargetPriority { Nearest, Farthest }
+
+[System.Serializable]
+public class TowerLevelStats
+{
+    public float range = 10f;
+    public float attackInterval = 0.5f;
+    public int damage = 5;
+
+    [Range(0.1f, 1f)] public float slowMultiplier = 1f;
+    public float slowDuration = 0f;
+
+    [Header("������ Lv3 ��Ч")]
+    public Color pulseColor = new Color(0.3f, 0.8f, 1f, 1f);
+    public float stunDuration = 0f;
+
+    [Header("Ⱥ�ˣ�0 = ���壬> 0 = ��Χ�˺���")]
+    public float explosionRadius = 0f;
+
+    public int upgradeCost = 0;
+}
+
+[CreateAssetMenu(fileName = "NewTowerData", menuName = "TowerDefense/TowerData")]
+public class TowerData : ScriptableObject
+{
+    public string towerName;
+    public int cost;
+    public float buildTime;
+    public GameObject towerPrefab;
+
+    [Header("��������")]
+    public TowerAttackType attackType = TowerAttackType.Projectile;
+    public ProjectileMode projectileMode = ProjectileMode.Straight;
+    public GameObject bulletPrefab;
+
+    [Header("Ŀ��ѡ�����")]
+    public TargetPriority targetPriority = TargetPriority.Nearest;
+
+    [Header("��׼��Ч�����ѻ���ר�ã�")]
+    public bool useAimLine = false;
+    public float aimLineDuration = 0.3f;
+    public Color aimLineColor = new Color(1f, 0.15f, 0.15f, 0.9f);
+    public float aimLineWidth = 0.08f;
+
+    [Header("ÿһ�������ԣ�0=Lv1, 1=Lv2, 2=Lv3��")]
+    public TowerLevelStats[] levels;
+
+    public TowerLevelStats GetStats(int level)
+    {
+        if (levels == null || levels.Length == 0) return null;
+        return levels[Mathf.Clamp(level, 0, levels.Length - 1)];
+    }
+
+    public int MaxLevel => levels != null ? levels.Length : 1;
+}
+
+=======================================
+// Assets/Scripts/Towers/TowerRangeIndicator.cs
+=======================================
+using UnityEngine;
+
+public class TowerRangeIndicator : MonoBehaviour
+{
+    public static TowerRangeIndicator Instance;
+
+    [Header("���")]
+    public Color color = new Color(1f, 0.9f, 0.4f, 0.7f);   // ����
+    public float lineWidth = 0.25f;
+    public float ringHeight = 0.3f;
+
+    private LineRenderer _lr;
+    private const int SEGMENTS = 96;
+
+    void Awake()
+    {
+        Instance = this;
+
+        _lr = GetComponent<LineRenderer>();
+        if (_lr == null) _lr = gameObject.AddComponent<LineRenderer>();
+
+        _lr.useWorldSpace = true;
+        _lr.loop = true;
+        _lr.positionCount = SEGMENTS;
+        _lr.widthMultiplier = lineWidth;
+        _lr.numCapVertices = 2;
+
+        Shader shader = Shader.Find("Sprites/Default");
+        _lr.material = new Material(shader);
+
+        _lr.startColor = color;
+        _lr.endColor = color;
+        _lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        _lr.receiveShadows = false;
+
+        _lr.enabled = false;
+    }
+
+    public void Show(Vector3 center, float radius)
+    {
+        _lr.enabled = true;
+
+        Vector3 c = new Vector3(center.x, ringHeight, center.z);
+        for (int i = 0; i < SEGMENTS; i++)
+        {
+            float angle = i * Mathf.PI * 2f / SEGMENTS;
+            Vector3 p = c + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
+            _lr.SetPosition(i, p);
+        }
+    }
+
+    public void Hide()
+    {
+        _lr.enabled = false;
+    }
+}
+
+=======================================
+// Assets/Scripts/Towers/Wingman.cs
+=======================================
+using UnityEngine;
+using Unity.Netcode;
+
+public class Wingman : NetworkBehaviour
+{
+    [Header("���в���")]
+    public ulong targetNetworkId;
+    public int orbitIndex = 0;
+    public int totalCount = 3;
+    public GameObject bulletPrefab;
+    public float attackInterval = 0.3f;
+    public int damage = 3;
+    public float orbitRadius = 4f;
+    public float orbitSpeed = 180f;
+    public float lifeTime = 10f;
+
+    private float _elapsed = 0f;
+    private float _angle = 0f;
+    private float _cooldown = 0f;
+    private Enemy _target;
+
+    public override void OnNetworkSpawn()
+    {
+        _angle = orbitIndex * (360f / totalCount);
+        _elapsed = 0f;
+
+        if (IsServer) FindTarget();
+    }
+
+    void FindTarget()
+    {
+        _target = null;
+
+        if (targetNetworkId != 0 &&
+            NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(targetNetworkId, out var netObj))
+        {
+            _target = netObj.GetComponent<Enemy>();
+        }
+
+        if (_target == null || _target.IsDead)
+        {
+            if (LockOnManager.Instance != null && LockOnManager.Instance.LockedEnemy != null)
+                _target = LockOnManager.Instance.LockedEnemy;
+            else if (EnemyManager.Instance != null)
+                _target = EnemyManager.Instance.FindNearestInRange(transform.position, 9999f);
+        }
+    }
+
+    void Update()
+    {
+        if (!IsServer) return;
+
+        _elapsed += Time.deltaTime;
+        if (_elapsed >= lifeTime)
+        {
+            if (NetworkObject != null && NetworkObject.IsSpawned)
+                NetworkObject.Despawn(true);
+            return;
+        }
+
+        if (_target == null || _target.IsDead) FindTarget();
+        if (_target == null) return;
+
+        _angle += orbitSpeed * Time.deltaTime;
+        float rad = _angle * Mathf.Deg2Rad;
+        Vector3 center = _target.transform.position;
+        Vector3 offset = new Vector3(Mathf.Cos(rad), 0, Mathf.Sin(rad)) * orbitRadius;
+        Vector3 desired = center + offset;
+        desired.y = center.y + 2f;
+
+        transform.position = Vector3.Lerp(transform.position, desired, 5f * Time.deltaTime);
+
+        Vector3 lookDir = _target.transform.position - transform.position;
+        lookDir.y = 0;
+        if (lookDir.sqrMagnitude > 0.001f)
+            transform.rotation = Quaternion.LookRotation(lookDir);
+
+        _cooldown -= Time.deltaTime;
+        if (_cooldown <= 0f)
+        {
+            Fire();
+            _cooldown = attackInterval;
+        }
+    }
+
+    void Fire()
+    {
+        if (_target == null || bulletPrefab == null) return;
+
+        // ��Server �˲��š�
+        SoundManager.Instance?.Play("�Ż�����");
+
+        Vector3 spawnPos = transform.position + transform.forward * 1f;
+        GameObject obj = Instantiate(bulletPrefab, spawnPos, Quaternion.identity);
+        Bullet bullet = obj.GetComponent<Bullet>();
+        if (bullet != null)
+            bullet.SetTarget(_target.transform, damage, 1f, 0f, 0f, false);
+
+        FireClientRpc(spawnPos, _target.NetworkObjectId);
+    }
+
+    [ClientRpc]
+    void FireClientRpc(Vector3 spawnPos, ulong targetId)
+    {
+        if (IsServer) return;
+
+        // ���ͻ��˲��š�
+        SoundManager.Instance?.Play("�Ż�����");
+
+        Enemy target = null;
+        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(targetId, out var netObj))
+            target = netObj.GetComponent<Enemy>();
+        if (target == null) return;
+
+        GameObject obj = Instantiate(bulletPrefab, spawnPos, Quaternion.identity);
+        Bullet bullet = obj.GetComponent<Bullet>();
+        if (bullet != null)
+            bullet.SetTarget(target.transform, damage, 1f, 0f, 0f, true);
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/GameOverPanel.cs
+=======================================
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+using UnityEngine.SceneManagement;
+using System.Collections;
+using Unity.Netcode;
+
+public class GameOverPanel : MonoBehaviour
+{
+    [Header("UI")]
+    public CanvasGroup canvasGroup;
+    public TextMeshProUGUI titleText;
+    public TextMeshProUGUI subtitleText;
+    public Button restartButton;
+
+    [Header("����")]
+    public float fadeDuration = 0.6f;
+    public float delayBeforeShow = 0.8f;
+
+    [Header("��ɫ")]
+    public Color victoryColor = new Color(1f, 0.85f, 0.4f);
+    public Color defeatColor = new Color(1f, 0.35f, 0.35f);
+
+    void Awake()
+    {
+        if (canvasGroup != null)
+        {
+            canvasGroup.alpha = 0f;
+            canvasGroup.interactable = false;
+            canvasGroup.blocksRaycasts = false;
+        }
+    }
+
+    void Start()
+    {
+        if (restartButton != null)
+            restartButton.onClick.AddListener(OnRestartClicked);
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.OnGameEnded += HandleGameEnded;
+    }
+
+    void OnDestroy()
+    {
+        if (GameManager.Instance != null)
+            GameManager.Instance.OnGameEnded -= HandleGameEnded;
+    }
+
+    private void HandleGameEnded(bool isVictory)
+    {
+        StartCoroutine(ShowAfterDelay(isVictory));
+    }
+
+    private IEnumerator ShowAfterDelay(bool isVictory)
+    {
+        yield return new WaitForSeconds(delayBeforeShow);
+
+        if (titleText != null)
+        {
+            titleText.text = isVictory ? "ʤ ����" : "ʧ ��";
+            titleText.color = isVictory ? victoryColor : defeatColor;
+        }
+
+        if (subtitleText != null)
+            subtitleText.text = isVictory ? "����ס�����в���" : "����ͻ���˷���";
+
+        float t = 0f;
+        while (t < fadeDuration)
+        {
+            t += Time.deltaTime;
+            canvasGroup.alpha = Mathf.Clamp01(t / fadeDuration);
+            yield return null;
+        }
+        canvasGroup.alpha = 1f;
+        canvasGroup.interactable = true;
+        canvasGroup.blocksRaycasts = true;
+    }
+
+    private void OnRestartClicked()
+    {
+        if (restartButton != null) restartButton.interactable = false;
+
+        if (NetworkManager.Singleton == null) return;
+
+        if (NetworkManager.Singleton.IsServer)
+            RestartServerRpc();
+        else
+            RequestRestartServerRpc();
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void RequestRestartServerRpc()
+    {
+        RestartServerRpc();
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void RestartServerRpc()
+    {
+        if (!NetworkManager.Singleton.IsServer) return;
+
+        string sceneName = SceneManager.GetActiveScene().name;
+        NetworkManager.Singleton.SceneManager.LoadScene(sceneName, LoadSceneMode.Single);
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/HealthBarManager.cs
+=======================================
+using UnityEngine;
+using UnityEngine.UI;
+using System.Collections.Generic;
+
+public class HealthBarManager : MonoBehaviour
+{
+    public static HealthBarManager Instance;
+
+    [Header("Ѫ��Ԥ����")]
+    public GameObject healthBarPrefab;
+
+    private Dictionary<Enemy, Image> _healthBars = new Dictionary<Enemy, Image>();
+    private Camera _mainCamera;
+
+    void Awake()
+    {
+        Instance = this;
+        _mainCamera = Camera.main;
+    }
+
+    public void AddBar(Enemy enemy, float width, float height, Color fillColor)
+    {
+        if (healthBarPrefab == null || _healthBars.ContainsKey(enemy)) return;
+
+        GameObject go = Instantiate(healthBarPrefab, transform);
+        RectTransform rt = go.GetComponent<RectTransform>();
+
+        rt.sizeDelta = new Vector2(width * 100f, height * 100f);
+
+        Transform fillTf = go.transform.Find("Fill");
+        Image fillImg = null;
+        if (fillTf != null)
+        {
+            fillImg = fillTf.GetComponent<Image>();
+            if (fillImg != null)
+            {
+                fillImg.color = fillColor;
+                fillImg.type = Image.Type.Filled;
+                fillImg.fillMethod = Image.FillMethod.Horizontal;
+                fillImg.fillOrigin = (int)Image.OriginHorizontal.Left;
+                fillImg.fillAmount = 1f;
+            }
+
+            // ���޸���ǿ���ŵ������棬��ֹ���������ڵ�
+            fillTf.SetAsLastSibling();
+
+            RectTransform fillRt = fillTf.GetComponent<RectTransform>();
+            if (fillRt != null)
+            {
+                fillRt.anchorMin = Vector2.zero;
+                fillRt.anchorMax = Vector2.one;
+                fillRt.offsetMin = Vector2.zero;
+                fillRt.offsetMax = Vector2.zero;
+                // ���޸��������������һ�㣨Z��ƫ�ƣ������ World Space ��ȳ�ͻ
+                fillRt.localPosition = new Vector3(fillRt.localPosition.x, fillRt.localPosition.y, -0.1f);
+            }
+        }
+
+        _healthBars[enemy] = fillImg;
+    }
+
+    public void RemoveBar(Enemy enemy)
+    {
+        if (_healthBars.TryGetValue(enemy, out var img))
+        {
+            if (img != null) Destroy(img.transform.parent.gameObject);
+            _healthBars.Remove(enemy);
+        }
+    }
+
+    public void UpdateHealth(Enemy enemy, float healthPct)
+    {
+        if (_healthBars.TryGetValue(enemy, out var img) && img != null)
+        {
+            img.fillAmount = healthPct;
+        }
+    }
+
+    void LateUpdate()
+    {
+        if (_mainCamera == null) _mainCamera = Camera.main;
+        if (_mainCamera == null) return;
+
+        transform.rotation = _mainCamera.transform.rotation;
+
+        foreach (var kvp in _healthBars)
+        {
+            var enemy = kvp.Key;
+            var fillImg = kvp.Value;
+
+            if (enemy == null)
+            {
+                if (fillImg != null) Destroy(fillImg.transform.parent.gameObject);
+                continue;
+            }
+
+            if (fillImg == null) continue;
+
+            Vector3 worldPos = enemy.transform.position + Vector3.up * enemy.healthBarHeight;
+            Transform barTf = fillImg.transform.parent;
+            barTf.position = worldPos;
+
+            barTf.gameObject.SetActive(Vector3.Dot(_mainCamera.transform.forward, worldPos - _mainCamera.transform.position) > 0);
+        }
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/HUDController.cs
+=======================================
+using UnityEngine;
+using TMPro;
+
+public class HUDController : MonoBehaviour
+{
+    public TextMeshProUGUI goldText;
+    public TextMeshProUGUI healthText;
+    public TextMeshProUGUI waveText;
+
+    // ���Ż�����״̬
+    private bool _bound = false;
+
+    void Start()
+    {
+        if (waveText != null) waveText.text = "����: -/-";
+        TryBind();
+    }
+
+    // ���Ż���GameManager �������� HUD ���֣�����ʱ�������Ա���һ��������ѯ
+    // �󶨳ɹ��� _bound = true���˺� Update ֱ�� return
+    void Update()
+    {
+        if (_bound) return;
+        TryBind();
+    }
+
+    // ���Ż���һ���԰󶨵� NetworkVariable.OnValueChanged
+    private void TryBind()
+    {
+        if (GameManager.Instance == null) return;
+
+        var gm = GameManager.Instance;
+
+        // �Ƚ�󣨷�ֹ�ظ��󶨣�������������� TryBind ֻ��ɹ�һ��
+        Unbind(gm);
+
+        gm.currentGold.OnValueChanged += OnGoldChanged;
+        gm.currentHealth.OnValueChanged += OnHealthChanged;
+        gm.currentWaveNV.OnValueChanged += OnWaveChangedInternal;
+        gm.totalWavesNV.OnValueChanged += OnTotalWavesChanged;
+
+        _bound = true;
+
+        // ����ˢ��һ�ε�ǰֵ������󶨵���һ�α仯֮��Ĵ�����ʾ��ֵ��
+        OnGoldChanged(0, gm.currentGold.Value);
+        OnHealthChanged(0, gm.currentHealth.Value);
+        RefreshWave();
+    }
+
+    private void Unbind(GameManager gm)
+    {
+        if (gm == null) return;
+        gm.currentGold.OnValueChanged -= OnGoldChanged;
+        gm.currentHealth.OnValueChanged -= OnHealthChanged;
+        gm.currentWaveNV.OnValueChanged -= OnWaveChangedInternal;
+        gm.totalWavesNV.OnValueChanged -= OnTotalWavesChanged;
+    }
+
+    void OnDestroy()
+    {
+        // ���Ż���GameManager �����Ѿ����٣���Ҫ null ���
+        if (GameManager.Instance != null)
+            Unbind(GameManager.Instance);
+    }
+
+    private void OnGoldChanged(int oldV, int newV)
+    {
+        if (goldText != null)
+            goldText.text = "���: " + newV;
+    }
+
+    private void OnHealthChanged(int oldV, int newV)
+    {
+        if (healthText != null)
+            healthText.text = "Ѫ��: " + newV;
+    }
+
+    private void OnWaveChangedInternal(int oldV, int newV) => RefreshWave();
+    private void OnTotalWavesChanged(int oldV, int newV) => RefreshWave();
+
+    private void RefreshWave()
+    {
+        if (waveText == null || GameManager.Instance == null) return;
+
+        int cw = GameManager.Instance.currentWaveNV.Value;
+        int tw = GameManager.Instance.totalWavesNV.Value;
+        if (tw > 0)
+            waveText.text = $"����: {cw}/{tw}";
+        else
+            waveText.text = "����: -/-";
+    }
+
+    public void SetWaveText(int current, int total)
+    {
+        // �շ��������ݾɵ��á�ʵ���� OnValueChanged ����
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/LockOnIndicator.cs
+=======================================
+using UnityEngine;
+
+[RequireComponent(typeof(LineRenderer))]
+public class LockOnIndicator : MonoBehaviour
+{
+    [Header("���")]
+    public Color color = new Color(1f, 0.2f, 0.2f, 0.9f);
+    public float lineWidth = 0.18f;
+    public float ringHeight = 0.3f;
+
+    [Header("����")]
+    public float shrinkDuration = 0.4f;
+    public float startScale = 4f;
+    public float idleScale = 1.2f;
+    public float holdPulseAmplitude = 0.08f;
+    public float holdPulseSpeed = 5f;
+    public float fadeOutDuration = 0.4f;
+
+    private LineRenderer _lr;
+    private const int SEGMENTS = 64;
+
+    private Enemy _currentTarget;
+    private float _stateTimer;
+    private enum State { Idle, Shrinking, Holding, Fading }
+    private State _state = State.Idle;
+
+    void Awake()
+    {
+        _lr = GetComponent<LineRenderer>();
+        _lr.useWorldSpace = false;
+        _lr.loop = true;
+        _lr.positionCount = SEGMENTS;
+        _lr.widthMultiplier = lineWidth;
+        _lr.numCapVertices = 2;
+
+        Shader shader = Shader.Find("Sprites/Default");
+        _lr.material = new Material(shader);
+        _lr.startColor = color;
+        _lr.endColor = color;
+        _lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        _lr.receiveShadows = false;
+        _lr.enabled = false;
+
+        for (int i = 0; i < SEGMENTS; i++)
+        {
+            float a = i * Mathf.PI * 2f / SEGMENTS;
+            _lr.SetPosition(i, new Vector3(Mathf.Cos(a), 0f, Mathf.Sin(a)));
+        }
+
+        transform.localScale = new Vector3(idleScale, 1f, idleScale);
+    }
+
+    void LateUpdate()
+    {
+        Enemy locked = LockOnManager.Instance != null ? LockOnManager.Instance.LockedEnemy : null;
+
+        // Ŀ��仯
+        if (locked != _currentTarget)
+        {
+            if (locked != null)
+            {
+                // ��Ŀ�꣬��ͷ����
+                _currentTarget = locked;
+                _state = State.Shrinking;
+                _stateTimer = 0f;
+                transform.localScale = new Vector3(startScale, 1f, startScale);
+                _lr.enabled = true;
+                SetAlpha(1f);
+            }
+            else
+            {
+                // Ŀ��û�ˣ����뵭��
+                if (_currentTarget != null) { _state = State.Fading; _stateTimer = 0f; }
+            }
+        }
+
+        if (_currentTarget == null && _state != State.Fading)
+        {
+            _lr.enabled = false;
+            return;
+        }
+
+        // �������
+        if (_currentTarget != null)
+            transform.position = new Vector3(
+                _currentTarget.transform.position.x, ringHeight, _currentTarget.transform.position.z);
+
+        _stateTimer += Time.deltaTime;
+
+        switch (_state)
+        {
+            case State.Shrinking:
+                {
+                    float t = Mathf.Clamp01(_stateTimer / shrinkDuration);
+                    float s = Mathf.Lerp(startScale, idleScale, t);
+                    transform.localScale = new Vector3(s, 1f, s);
+                    SetAlpha(1f);
+                    if (t >= 1f) { _state = State.Holding; _stateTimer = 0f; }
+                    break;
+                }
+            case State.Holding:
+                {
+                    float pulse = idleScale + Mathf.Sin(Time.time * holdPulseSpeed) * holdPulseAmplitude;
+                    transform.localScale = new Vector3(pulse, 1f, pulse);
+                    SetAlpha(1f);
+                    break;
+                }
+            case State.Fading:
+                {
+                    float f = Mathf.Clamp01(_stateTimer / fadeOutDuration);
+                    SetAlpha(1f - f);
+                    if (f >= 1f)
+                    {
+                        _lr.enabled = false;
+                        _currentTarget = null;
+                        _state = State.Idle;
+                    }
+                    break;
+                }
+        }
+    }
+
+    private void SetAlpha(float a)
+    {
+        Color c = color; c.a = color.a * a;
+        _lr.startColor = c;
+        _lr.endColor = c;
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/MenuController.cs
+=======================================
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+using Unity.Netcode;
+using Unity.Netcode.Transports.UTP;
+
+public class MenuController : MonoBehaviour
+{
+    [Header("Canvas ��")]
+    public GameObject mainMenuCanvas;
+    public GameObject gameCanvas;
+
+    [Header("ҳ��")]
+    public GameObject mainPage;
+    public GameObject multiplayerPage;
+    public GameObject waitingPage;
+    public GameObject joinPage;
+
+    [Header("��ҳ��ť")]
+    public Button btnSingle;
+    public Button btnMulti;
+    public Button btnQuitMain;
+
+    [Header("����ҳ��ť")]
+    public Button btnHost;
+    public Button btnJoin;
+    public Button btnMultiBack;
+
+    [Header("�ȴ�ҳ")]
+    public TextMeshProUGUI waitingText;
+    public TextMeshProUGUI waitingStatusText;
+    public Button btnWaitCancel;
+
+    [Header("����ҳ")]
+    public InputField inputFieldIP;
+    public TextMeshProUGUI joinStatusText;
+    public Button btnJoinConnect;
+    public Button btnJoinBack;
+
+    private bool _isWaitingForStart = false;
+
+    void Start()
+    {
+        btnSingle.onClick.AddListener(OnClickSingle);
+        btnMulti.onClick.AddListener(OnClickMulti);
+        btnQuitMain.onClick.AddListener(OnClickQuit);
+
+        btnHost.onClick.AddListener(OnClickHost);
+        btnJoin.onClick.AddListener(OnClickJoin);
+        btnMultiBack.onClick.AddListener(OnClickMultiBack);
+
+        btnWaitCancel.onClick.AddListener(OnClickWaitCancel);
+
+        btnJoinConnect.onClick.AddListener(OnClickJoinConnect);
+        btnJoinBack.onClick.AddListener(OnClickJoinBack);
+
+        var nm = NetworkManager.Singleton;
+        if (nm != null)
+        {
+            nm.OnClientConnectedCallback += OnClientConnected;
+            nm.OnClientDisconnectCallback += OnClientDisconnected;
+        }
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.OnGameStartedChanged += OnGameStarted;
+
+        ShowMainPage();
+        if (gameCanvas != null) gameCanvas.SetActive(false);
+    }
+
+    void OnDestroy()
+    {
+        var nm = NetworkManager.Singleton;
+        if (nm != null)
+        {
+            nm.OnClientConnectedCallback -= OnClientConnected;
+            nm.OnClientDisconnectCallback -= OnClientDisconnected;
+        }
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.OnGameStartedChanged -= OnGameStarted;
+    }
+
+    void ShowPage(GameObject page)
+    {
+        if (mainPage != null) mainPage.SetActive(false);
+        if (multiplayerPage != null) multiplayerPage.SetActive(false);
+        if (waitingPage != null) waitingPage.SetActive(false);
+        if (joinPage != null) joinPage.SetActive(false);
+        if (page != null) page.SetActive(true);
+    }
+
+    void ShowMainPage() => ShowPage(mainPage);
+    void ShowMultiplayerPage() => ShowPage(multiplayerPage);
+    void ShowWaitingPage() => ShowPage(waitingPage);
+    void ShowJoinPage() => ShowPage(joinPage);
+
+    // ==== ���˵� ====
+    void OnClickSingle()
+    {
+        NetworkManager.Singleton.StartHost();
+        if (GameManager.Instance != null) GameManager.Instance.StartGame();
+    }
+
+    void OnClickMulti() { ShowMultiplayerPage(); }
+
+    void OnClickQuit()
+    {
+        Application.Quit();
+#if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+#endif
+    }
+
+    // ==== ����ҳ ====
+    void OnClickHost()
+    {
+        _isWaitingForStart = true;
+        NetworkManager.Singleton.StartHost();
+        ShowWaitingPage();
+        if (waitingText != null) waitingText.text = "�ȴ���Ҽ��롭��";
+        if (waitingStatusText != null) waitingStatusText.text = "�Ѽ��룺1 ��";
+    }
+
+    void OnClickJoin()
+    {
+        ShowJoinPage();
+        if (joinStatusText != null) joinStatusText.text = "";
+    }
+
+    void OnClickMultiBack() { ShowMainPage(); }
+
+    // ==== �ȴ�ҳ ====
+    void OnClickWaitCancel()
+    {
+        _isWaitingForStart = false;
+        NetworkManager.Singleton.Shutdown();
+        ShowMainPage();
+    }
+
+    // ==== ����ҳ ====
+    void OnClickJoinConnect()
+    {
+        string ip = (inputFieldIP != null && !string.IsNullOrEmpty(inputFieldIP.text))
+            ? inputFieldIP.text.Trim() : "127.0.0.1";
+
+        var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
+        transport.SetConnectionData(ip, 7777);
+
+        if (joinStatusText != null) joinStatusText.text = $"�������� {ip}...";
+        NetworkManager.Singleton.StartClient();
+    }
+
+    void OnClickJoinBack()
+    {
+        if (NetworkManager.Singleton.IsClient && !NetworkManager.Singleton.IsConnectedClient)
+            NetworkManager.Singleton.Shutdown();
+        ShowMultiplayerPage();
+    }
+
+    // ==== ����ص� ====
+    void OnClientConnected(ulong clientId)
+    {
+        if (NetworkManager.Singleton.IsServer && clientId != 0 && _isWaitingForStart)
+        {
+            if (waitingStatusText != null)
+                waitingStatusText.text = "�Ѽ��룺2 �ˣ���Ϸ��ʼ��";
+
+            if (GameManager.Instance != null) GameManager.Instance.StartGame();
+            _isWaitingForStart = false;
+        }
+    }
+
+    void OnClientDisconnected(ulong clientId)
+    {
+        if (NetworkManager.Singleton.IsClient && !NetworkManager.Singleton.IsConnectedClient)
+        {
+            if (joinStatusText != null)
+                joinStatusText.text = "����ʧ�ܣ����� IP ������״̬";
+        }
+    }
+
+    // ==== ��Ϸ��ʼ ====
+    void OnGameStarted()
+    {
+        if (mainMenuCanvas != null) mainMenuCanvas.SetActive(false);
+        if (gameCanvas != null) gameCanvas.SetActive(true);
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/ScreenDamageEffect.cs
+=======================================
+using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
+
+public class ScreenDamageEffect : MonoBehaviour
+{
+    [Header("����")]
+    public Volume globalVolume;
+
+    [Header("����ǿ�ȣ�����Ѫ��ʱ�� Vignette ǿ�ȣ�")]
+    public float baseIntensity = 0.35f;
+
+    [Header("���Ѫ��ʱ��ǿ��")]
+    public float maxIntensity = 0.85f;
+
+    [Header("�Ӷ���Ѫ��������ʼ��죨0.5 = 50%��")]
+    [Range(0.1f, 1f)] public float lowHealthThreshold = 0.5f;
+
+    [Header("������˸")]
+    public float flashDuration = 0.4f;
+    public float flashStrength = 0.4f;
+
+    [Header("Σ��ɫ")]
+    public Color normalColor = Color.black;
+    public Color dangerColor = new Color(0.6f, 0f, 0f);
+
+    private Vignette _vignette;
+    private float _flashTimer = 0f;
+    private int _lastHealth = -1;
+
+    void Start()
+    {
+        if (globalVolume == null || globalVolume.profile == null)
+        {
+            Debug.LogWarning("ScreenDamageEffect: û��ָ�� Global Volume");
+            enabled = false;
+            return;
+        }
+
+        if (!globalVolume.profile.TryGet<Vignette>(out _vignette))
+        {
+            Debug.LogWarning("ScreenDamageEffect: Global Volume ��û�� Vignette��ȥ��һ��");
+            enabled = false;
+            return;
+        }
+
+        _vignette.active = true;
+    }
+
+    void Update()
+    {
+        if (GameManager.Instance == null) return;
+
+        int health = GameManager.Instance.CurrentHealth;
+        int maxHealth = Mathf.Max(1, GameManager.Instance.startHealth);
+
+        // ���� �� ��һ��
+        if (_lastHealth >= 0 && health < _lastHealth)
+        {
+            _flashTimer = flashDuration;
+        }
+        _lastHealth = health;
+
+        // ��˸˥��
+        if (_flashTimer > 0f) _flashTimer -= Time.deltaTime;
+        float flash = _flashTimer > 0f ? flashStrength * (_flashTimer / flashDuration) : 0f;
+
+        // ��Ѫ������ǿ��
+        float healthRatio = (float)health / maxHealth;
+        float danger = 1f - Mathf.Clamp01(healthRatio / lowHealthThreshold);
+
+        float targetIntensity = baseIntensity + danger * (maxIntensity - baseIntensity);
+        _vignette.intensity.value = Mathf.Clamp01(targetIntensity + flash);
+
+        // ��ɫ
+        _vignette.color.value = Color.Lerp(normalColor, dangerColor, danger);
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/UIButtonSound.cs
+=======================================
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
+
+[RequireComponent(typeof(Button))]
+public class UIButtonSound : MonoBehaviour, IPointerEnterHandler
+{
+    void Start()
+    {
+        var btn = GetComponent<Button>();
+        if (btn != null)
+            btn.onClick.AddListener(() => SoundManager.Instance?.Play("UI���"));
+    }
+
+    public void OnPointerEnter(PointerEventData eventData)
+    {
+        SoundManager.Instance?.Play("UI��ͣ", 0.5f);
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/UIPanelAnimator.cs
+=======================================
+using UnityEngine;
+using System.Collections;
+
+public enum PanelAnimationMode { Slide, Fade }
+
+[RequireComponent(typeof(RectTransform))]
+public class UIPanelAnimator : MonoBehaviour
+{
+    [Header("ģʽ")]
+    public PanelAnimationMode mode = PanelAnimationMode.Slide;
+
+    [Header("ͨ��")]
+    public float duration = 0.3f;
+    public AnimationCurve easeCurve = new AnimationCurve(new Keyframe(0, 0), new Keyframe(1, 1));
+
+    [Header("Slide ģʽ����")]
+    public float offsetX = 300f;
+
+    [Header("Fade ģʽ����")]
+    [Range(0.5f, 1f)] public float fadeFromScale = 0.9f;
+    public float fadeFromOffsetY = 40f;
+
+    private RectTransform _rect;
+    private CanvasGroup _canvasGroup;
+    private Vector2 _originalPos;
+    private Vector3 _originalScale;
+    private Coroutine _currentAnim;
+    private bool _initialized = false;
+    private bool _isVisible = false;   // ����������ǰ״̬
+
+    void Awake()
+    {
+        _rect = GetComponent<RectTransform>();
+        _originalPos = _rect.anchoredPosition;
+        _originalScale = _rect.localScale;
+
+        if (mode == PanelAnimationMode.Fade)
+        {
+            _canvasGroup = GetComponent<CanvasGroup>();
+            if (_canvasGroup == null)
+                _canvasGroup = gameObject.AddComponent<CanvasGroup>();
+            _canvasGroup.alpha = 0f;
+        }
+
+        if (mode == PanelAnimationMode.Slide)
+        {
+            _rect.anchoredPosition = _originalPos + new Vector2(offsetX, 0);
+        }
+        else
+        {
+            _rect.anchoredPosition = _originalPos + new Vector2(0, -fadeFromOffsetY);
+            _rect.localScale = _originalScale * fadeFromScale;
+        }
+
+        gameObject.SetActive(false);
+        _isVisible = false;
+        _initialized = true;
+    }
+
+    public void Show()
+    {
+        if (!_initialized) return;
+        if (_isVisible) return;   // ���������Ѿ���ʾ������
+
+        _isVisible = true;
+        gameObject.SetActive(true);
+        if (_currentAnim != null) StopCoroutine(_currentAnim);
+
+        if (mode == PanelAnimationMode.Slide)
+            _currentAnim = StartCoroutine(AnimateSlide(_originalPos + new Vector2(offsetX, 0), _originalPos));
+        else
+            _currentAnim = StartCoroutine(AnimateFadeShow());
+    }
+
+    public void Hide()
+    {
+        if (!_initialized) return;
+        if (!_isVisible) return;   // ���������Ѿ����أ�����
+
+        _isVisible = false;
+        if (_currentAnim != null) StopCoroutine(_currentAnim);
+
+        if (mode == PanelAnimationMode.Slide)
+            _currentAnim = StartCoroutine(AnimateSlide(_originalPos, _originalPos + new Vector2(offsetX, 0), () => gameObject.SetActive(false)));
+        else
+            _currentAnim = StartCoroutine(AnimateFadeHide(() => gameObject.SetActive(false)));
+    }
+
+    private IEnumerator AnimateSlide(Vector2 start, Vector2 end, System.Action onComplete = null)
+    {
+        float time = 0f;
+        while (time < duration)
+        {
+            time += Time.deltaTime;
+            float t = Mathf.Clamp01(time / duration);
+            float curveValue = easeCurve.Evaluate(t);
+            _rect.anchoredPosition = Vector2.LerpUnclamped(start, end, curveValue);
+            yield return null;
+        }
+        _rect.anchoredPosition = end;
+        onComplete?.Invoke();
+    }
+
+    private IEnumerator AnimateFadeShow()
+    {
+        Vector2 startPos = _originalPos + new Vector2(0, -fadeFromOffsetY);
+        Vector3 startScale = _originalScale * fadeFromScale;
+
+        _canvasGroup.alpha = 0f;
+        _rect.anchoredPosition = startPos;
+        _rect.localScale = startScale;
+
+        float time = 0f;
+        while (time < duration)
+        {
+            time += Time.deltaTime;
+            float t = Mathf.Clamp01(time / duration);
+            float curveValue = easeCurve.Evaluate(t);
+
+            _canvasGroup.alpha = Mathf.Clamp01(curveValue);
+            _rect.anchoredPosition = Vector2.LerpUnclamped(startPos, _originalPos, curveValue);
+            _rect.localScale = Vector3.LerpUnclamped(startScale, _originalScale, curveValue);
+            yield return null;
+        }
+        _canvasGroup.alpha = 1f;
+        _rect.anchoredPosition = _originalPos;
+        _rect.localScale = _originalScale;
+    }
+
+    private IEnumerator AnimateFadeHide(System.Action onComplete)
+    {
+        Vector2 startPos = _rect.anchoredPosition;
+        Vector3 startScale = _rect.localScale;
+        float startAlpha = _canvasGroup.alpha;
+
+        Vector2 endPos = _originalPos + new Vector2(0, fadeFromOffsetY * 0.3f);
+        Vector3 endScale = _originalScale * 0.95f;
+
+        float time = 0f;
+        while (time < duration)
+        {
+            time += Time.deltaTime;
+            float t = Mathf.Clamp01(time / duration);
+            float curveValue = easeCurve.Evaluate(t);
+
+            _canvasGroup.alpha = Mathf.LerpUnclamped(startAlpha, 0f, curveValue);
+            _rect.anchoredPosition = Vector2.LerpUnclamped(startPos, endPos, curveValue);
+            _rect.localScale = Vector3.LerpUnclamped(startScale, endScale, curveValue);
+            yield return null;
+        }
+        _canvasGroup.alpha = 0f;
+        onComplete?.Invoke();
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/UpgradePanel.cs
+=======================================
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+public class UpgradePanel : MonoBehaviour
+{
+    [Header("�ı�")]
+    public TextMeshProUGUI titleText;
+    public TextMeshProUGUI statsText;
+    public TextMeshProUGUI nextStatsText;
+    public TextMeshProUGUI costText;
+
+    [Header("��ť")]
+    public Button upgradeButton;
+    public TextMeshProUGUI upgradeButtonText;
+    public Button closeButton;
+
+    [Header("��嶯��")]
+    public UIPanelAnimator animator;
+
+    private Tower _currentTower;
+    public Button sellButton;
+    public TextMeshProUGUI sellButtonText;
+    void Start()
+    {
+        if (upgradeButton != null)
+            upgradeButton.onClick.AddListener(OnUpgradeClicked);
+        if (closeButton != null)
+            closeButton.onClick.AddListener(OnCloseClicked);
+        if (sellButton != null)
+            sellButton.onClick.AddListener(OnSellClicked);
+        if (animator != null) animator.Hide();
+    }
+
+    public void Show(Tower tower)
+    {
+        // �����������˶���һ��
+        UnsubscribeCurrent();
+
+        _currentTower = tower;
+        Refresh();
+        if (animator != null) animator.Show();
+
+        // �������������ȼ��仯��������ͬ��������ˢ�� UI
+        if (_currentTower != null && _currentTower.currentLevel != null)
+            _currentTower.currentLevel.OnValueChanged += HandleLevelChanged;
+    }
+    private void OnSellClicked()
+    {
+        if (_currentTower == null) return;
+        _currentTower.RequestSell();
+        Hide();
+    }
+    public void Hide()
+    {
+        UnsubscribeCurrent();
+        if (animator != null) animator.Hide();
+        _currentTower = null;
+    }
+
+    // ���������˶�
+    private void UnsubscribeCurrent()
+    {
+        if (_currentTower != null && _currentTower.currentLevel != null)
+            _currentTower.currentLevel.OnValueChanged -= HandleLevelChanged;
+    }
+
+    // ���������ȼ����˾�ˢ��
+    private void HandleLevelChanged(int oldValue, int newValue)
+    {
+        Refresh();
+    }
+
+    private void Refresh()
+    {
+        if (_currentTower == null || _currentTower.Data == null) return;
+
+        var data = _currentTower.Data;
+        int lv = _currentTower.CurrentLevel;
+        var curStats = data.GetStats(lv);
+        bool isMax = lv >= data.MaxLevel - 1;
+
+        if (titleText != null)
+            titleText.text = $"{data.towerName}  Lv{lv + 1}";
+        if (sellButtonText != null && _currentTower != null)
+        {
+            int refund = Mathf.RoundToInt(_currentTower.GetTotalInvested() * 0.7f);
+            sellButtonText.text = $"���� (+{refund})";
+        }
+        if (statsText != null && curStats != null)
+        {
+            statsText.text =
+                $"��Χ: {curStats.range}\n" +
+                $"�������: {curStats.attackInterval}s\n" +
+                $"�˺�: {curStats.damage}";
+        }
+
+        if (nextStatsText != null)
+        {
+            if (isMax) nextStatsText.text = "������";
+            else
+            {
+                var next = data.GetStats(lv + 1);
+                nextStatsText.text =
+                    $"�� ��Χ: {next.range}\n" +
+                    $"�� �������: {next.attackInterval}s\n" +
+                    $"�� �˺�: {next.damage}";
+            }
+        }
+
+        if (isMax)
+        {
+            if (costText != null) costText.text = "";
+            if (upgradeButton != null) upgradeButton.interactable = false;
+            if (upgradeButtonText != null) upgradeButtonText.text = "������";
+        }
+        else
+        {
+            var next = data.GetStats(lv + 1);
+            if (costText != null) costText.text = $"��������: {next.upgradeCost}";
+            if (upgradeButton != null)
+                upgradeButton.interactable =
+                    GameManager.Instance != null &&
+                    GameManager.Instance.CurrentGold >= next.upgradeCost;
+            if (upgradeButtonText != null) upgradeButtonText.text = "����";
+        }
+    }
+
+    private void OnUpgradeClicked()
+    {
+        if (_currentTower == null) return;
+
+        // ֻ������UI ˢ���� OnValueChanged ����
+        _currentTower.TryUpgrade();
+    }
+
+    private void OnCloseClicked()
+    {
+        Hide();
+        if (BuildManager.Instance != null && BuildManager.Instance.player != null)
+            BuildManager.Instance.player.canShowPreview = true;
+    }
+}
+
+=======================================
+// Assets/Scripts/UI/WaveAnnouncer.cs
+=======================================
+using UnityEngine;
+using TMPro;
+using System.Collections;
+
+public class WaveAnnouncer : MonoBehaviour
+{
+    public TextMeshProUGUI text;
+    public CanvasGroup canvasGroup;
+    public float fadeInDuration = 0.3f;
+    public float holdDuration = 1.7f;
+    public float fadeOutDuration = 0.5f;
+
+    private Coroutine _current;
+
+    void Awake()
+    {
+        if (canvasGroup != null) canvasGroup.alpha = 0f;
+        if (text != null) text.text = "";
+    }
+
+    void Start()
+    {
+        if (GameManager.Instance != null)
+            GameManager.Instance.OnWaveChanged += HandleWaveChanged;
+    }
+
+    void OnDestroy()
+    {
+        if (GameManager.Instance != null)
+            GameManager.Instance.OnWaveChanged -= HandleWaveChanged;
+    }
+
+    private void HandleWaveChanged(int current, int total)
+    {
+        Show($"�� {current} ����Ϯ�� ({current}/{total})");
+    }
+
+    public void Show(string message)
+    {
+        if (text == null || canvasGroup == null) return;
+        text.text = message;
+        if (_current != null) StopCoroutine(_current);
+        _current = StartCoroutine(PlaySequence());
+    }
+
+    private IEnumerator PlaySequence()
+    {
+        float t = 0f;
+        while (t < fadeInDuration)
+        {
+            t += Time.deltaTime;
+            canvasGroup.alpha = Mathf.Clamp01(t / fadeInDuration);
+            yield return null;
+        }
+        canvasGroup.alpha = 1f;
+
+        yield return new WaitForSeconds(holdDuration);
+
+        t = 0f;
+        while (t < fadeOutDuration)
+        {
+            t += Time.deltaTime;
+            canvasGroup.alpha = Mathf.Clamp01(1f - t / fadeOutDuration);
+            yield return null;
+        }
+        canvasGroup.alpha = 0f;
+        text.text = "";
+        _current = null;
+    }
+}
+

@@ -1,0 +1,56 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 429d6911b77470c498dcb8a45606fb3d, type: 3}
+  m_Name: SniperTowerData
+  m_EditorClassIdentifier: 
+  towerName: "\u72D9\u51FB\u5854"
+  cost: 150
+  buildTime: 3
+  towerPrefab: {fileID: 4744021553038530002, guid: b65924f7f5f1c2942b83c29665e433e1,
+    type: 3}
+  attackType: 0
+  projectileMode: 0
+  bulletPrefab: {fileID: 8486363076821161471, guid: b6140fca42070d74f9e8c9a9d11aecab,
+    type: 3}
+  targetPriority: 1
+  useAimLine: 1
+  aimLineDuration: 0.6
+  aimLineColor: {r: 1, g: 0.15, b: 0.15, a: 0.9}
+  aimLineWidth: 0.15
+  levels:
+  - range: 30
+    attackInterval: 2
+    damage: 200
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0, g: 0, b: 0, a: 0}
+    stunDuration: 0
+    explosionRadius: 0
+    upgradeCost: 0
+  - range: 34
+    attackInterval: 1.8
+    damage: 350
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0, g: 0, b: 0, a: 0}
+    stunDuration: 0
+    explosionRadius: 0
+    upgradeCost: 100
+  - range: 38
+    attackInterval: 1.5
+    damage: 600
+    slowMultiplier: 1
+    slowDuration: 0
+    pulseColor: {r: 0, g: 0, b: 0, a: 0}
+    stunDuration: 0
+    explosionRadius: 0
+    upgradeCost: 200
